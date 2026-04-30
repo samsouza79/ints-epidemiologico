@@ -67,30 +67,62 @@ export default function App() {
 
   useEffect(() => {
     fetchFilterOptions();
-    // 1. Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log("Auth event:", event, session?.user?.email);
-      setSession(session);
-      setEventType(event);
-      if (session) {
-        await fetchProfile(session.user.id, session.user.email);
-      } else {
+    
+    // Failsafe: se nada acontecer em 5 segundos, libera o loading
+    const timer = setTimeout(() => {
+      setLoading(current => {
+        if (current) {
+          console.warn("Failsafe: Forçando fim do loading (timeout 5s)");
+          return false;
+        }
+        return current;
+      });
+    }, 5000);
+
+    // Check initial session
+    const initSession = async () => {
+      console.log("Iniciando verificação de sessão...");
+      try {
+        const { data: { session: currentSession }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        
+        console.log("Sessão recuperada:", currentSession?.user?.email);
+        setSession(currentSession);
+        if (currentSession) {
+          fetchProfile(currentSession.user.id, currentSession.user.email);
+        }
+      } catch (err) {
+        console.error("Error getting session:", err);
+      } finally {
+        setLoading(false);
+        console.log("Loading finalizado (initSession)");
+      }
+    };
+
+    initSession();
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, currentSession) => {
+      console.log("Auth event:", event, currentSession?.user?.email);
+      
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') {
+        setSession(currentSession);
+        if (currentSession) {
+          fetchProfile(currentSession.user.id, currentSession.user.email);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        setSession(null);
         setProfile(null);
       }
+      
       setLoading(false);
+      console.log("Loading finalizado (onAuthStateChange)");
     });
 
-    // 2. Initial session check
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      if (session) {
-        fetchProfile(session.user.id, session.user.email);
-      } else {
-        setLoading(false);
-      }
-    });
-
-    return () => subscription.unsubscribe();
+    return () => {
+      subscription.unsubscribe();
+      clearTimeout(timer);
+    };
   }, []);
 
   const fetchProfile = async (userId: string, email?: string) => {
@@ -179,7 +211,7 @@ export default function App() {
         if (error) throw error;
         
         if (data.user) {
-          // Criar perfil pendente imediatamente para o administrador poder aprovar
+          // Criar perfil pendente imediatamente
           const isAdmin = ADMIN_EMAILS.includes(normalizedEmail);
           const { error: profileError } = await supabase.from('profiles').insert({
             id: data.user.id,
@@ -190,7 +222,7 @@ export default function App() {
           });
 
           if (profileError) {
-            console.warn("Aviso: Perfil não pôde ser pré-criado, mas o usuário foi registrado no Auth:", profileError);
+            console.warn("Aviso ao criar perfil:", profileError);
           }
 
           setSignupSuccess(true);
@@ -221,7 +253,7 @@ export default function App() {
       });
       
       if (error) {
-        if (error.message === "Invalid login credentials") {
+        if (error.message.includes("Invalid login credentials") || error.message.includes("E-mail ou senha incorretos")) {
            throw new Error("E-mail ou senha incorretos.");
         }
         throw error;
@@ -251,8 +283,8 @@ export default function App() {
     switch (activeTab) {
       case 'upload': return profile?.role === 'admin' ? <UploadSection profile={profile} /> : null;
       case 'producao': return <DashboardProducao {...dashboardProps} />;
-      case 'exames': return profile?.role === 'admin' ? <DashboardExames {...dashboardProps} /> : null;
-      case 'atestados': return profile?.role === 'admin' ? <DashboardAtestados {...dashboardProps} /> : null;
+      case 'exames': return <DashboardExames {...dashboardProps} />;
+      case 'atestados': return <DashboardAtestados {...dashboardProps} />;
       case 'apoio': return <DashboardApoio />;
       case 'epidemio': return <DashboardEpidemio {...dashboardProps} />;
       case 'relatorios': return <DashboardRelatorios />;
@@ -260,6 +292,8 @@ export default function App() {
       default: return <DashboardProducao {...dashboardProps} />;
     }
   };
+
+  console.log("App render | loading:", loading, "session:", !!session, "profile:", !!profile);
 
   if (loading) {
     return (
@@ -269,11 +303,12 @@ export default function App() {
           <span className="text-xs font-black text-ints-green opacity-70 uppercase tracking-[0.4em] mt-1">Epidemiológico</span>
         </div>
         <Loader2 className="w-8 h-8 text-ints-green animate-spin" />
+        <div className="mt-4 text-[10px] text-slate-300 uppercase tracking-widest">Iniciando sistema...</div>
       </div>
     );
   }
 
-  if (session && profile?.status !== 'approved' && profile?.role !== 'admin') {
+  if (session && profile && profile.status !== 'approved' && profile.role !== 'admin') {
     return (
       <div className="min-h-screen bg-ints-bg flex flex-col items-center justify-center p-4 text-center">
         <div className="card-minimal max-w-sm w-full p-8 space-y-6">

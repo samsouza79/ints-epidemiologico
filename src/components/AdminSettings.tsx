@@ -76,13 +76,19 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ user, profile }) => {
   const fetchProfiles = async () => {
     setLoadingProfiles(true);
     try {
+      console.log("Buscando perfis na tabela 'profiles'...");
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .order('role', { ascending: true })
         .order('nome', { ascending: true });
 
-      if (error) throw error;
+      if (error) {
+        console.error("Erro Supabase:", error);
+        throw error;
+      }
+      
+      console.log("Perfis encontrados:", data?.length, data);
       setProfiles(data || []);
       
       // Initialize selected roles for the UI selects

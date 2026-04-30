@@ -8,7 +8,14 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = 'https://jsytqithvfqrtdcjnjlc.supabase.co';
 const supabaseKey = 'sb_publishable_3CfeuU4VT-7J2yGJcHOc4Q_TQht_usz';
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+export const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+    storage: window.localStorage
+  }
+});
 
 /**
  * Handle Supabase errors and notify quota status if relevant

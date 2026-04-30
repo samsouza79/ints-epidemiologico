@@ -48,22 +48,24 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, user
     window.location.reload();
   };
 
-  const adminOnlyItems = ['upload', 'exames', 'atestados', 'admin'];
+  const adminOnlyItems = ['upload', 'admin'];
+
+  console.log("Layout render | role:", profile?.role);
+  console.log("Layout render | adminOnlyItems:", adminOnlyItems);
 
   const menuItems = [
     { id: 'producao', label: 'Produção / Metas', icon: BarChart3 },
+    { id: 'apoio', label: 'Apoio Assistencial', icon: Activity },
     { id: 'exames', label: 'Exames', icon: Stethoscope },
     { id: 'atestados', label: 'Atestados', icon: FileText },
-    { id: 'apoio', label: 'Apoio Assistencial', icon: Activity },
     { id: 'epidemio', label: 'Epidemiológico', icon: LayoutDashboard },
-    { id: 'upload', label: 'Upload de Arquivos', icon: FileUp },
     { id: 'relatorios', label: 'Relatórios', icon: ClipboardList },
+    { id: 'upload', label: 'Upload de Arquivos', icon: FileUp },
     { id: 'admin', label: 'Configurações Admin', icon: ShieldCheck },
   ].filter(item => {
-    if (adminOnlyItems.includes(item.id)) {
-      return profile?.role === 'admin';
-    }
-    return true;
+    const isAllowed = !adminOnlyItems.includes(item.id) || profile?.role === 'admin';
+    console.log(`Checking item ${item.id}: allowed=${isAllowed}`);
+    return isAllowed;
   });
 
   return (
