@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ints-green: #2D8653;
+  --color-ints-green-dark: #1E5C38;
+  --color-ints-bg: #F8FAFC;
+  --color-ints-gray: #E2E8F0;
+  
+  --font-sans: "Inter", "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
+  
+  --shadow-ints: 0 1px 3px rgba(0,0,0,0.05);
+}
+
+@layer base {
+  body {
+    @apply bg-ints-bg text-slate-800 antialiased;
+  }
+}
+
+@layer components {
+  .card-minimal {
+    @apply bg-white rounded-xl border border-ints-gray shadow-ints p-4;
+  }
+  
+  .badge-minimal {
+    @apply text-[10px] px-2 py-0.5 rounded-full font-semibold;
+  }
+  
+  .badge-green { @apply bg-green-100 text-green-800; }
+  .badge-yellow { @apply bg-yellow-100 text-yellow-800; }
+  .badge-red { @apply bg-red-100 text-red-800; }
+}

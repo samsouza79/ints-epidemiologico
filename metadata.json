@@ -1,0 +1,6 @@
+{
+  "name": "INTS Epidemiológico",
+  "description": "Sistema de análise de dados hospitalares e epidemiológicos para o INTS, com processamento automático de Excel e dashboards gerenciais.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
