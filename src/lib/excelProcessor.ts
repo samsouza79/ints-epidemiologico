@@ -150,19 +150,20 @@ export const parseExcelFile = async (file: File): Promise<{ type: FileType; data
         let { mes: fileMes, ano: fileAno } = extractDateFromFilename(file.name);
 
         // 3. Identify the Header Row
-        // SMPEP files often start at line 10-15
+        // SMPEP files often start at line 10-15, but some start at line 2.
         let headerRowIndex = -1;
         const headerKeywords = [
-          'CID', 'PACIENTE', 'ATEND', 'ATENDIMENTO', 'UNIDADE', 
-          'QUANTIDADE', 'PROCEDIMENTO', 'TIPO DE DOCUMENTO', 'QTD.', 'QTD'
+          'CID', 'PACIENTE', 'ATEND', 'ATENDIMENTO', 'UNIDADE', 'TOTAL',
+          'QUANTIDADE', 'PROCEDIMENTO', 'TIPO DE DOCUMENTO', 'QTD.', 'QTD', 'DIAGN', 'CAUSA',
+          'PRONTUARIO', 'NOME', 'DESCRICAO'
         ];
         
-        // Search first 100 rows for header AND check for date info in content if missing from filename
+        // Search first 100 rows for header
         const searchRange = Math.min(allRows.length, 100);
-        const headerRowsToSearch = allRows.slice(0, searchRange);
+        const rowsToScan = allRows.slice(0, searchRange);
         
         if (fileMes === null || fileAno === null) {
-          const contentDate = extractDateFromContent(headerRowsToSearch);
+          const contentDate = extractDateFromContent(rowsToScan);
           if (fileMes === null) fileMes = contentDate.mes;
           if (fileAno === null) fileAno = contentDate.ano;
         }
@@ -171,30 +172,49 @@ export const parseExcelFile = async (file: File): Promise<{ type: FileType; data
         if (fileMes === null) fileMes = new Date().getMonth() + 1;
         if (fileAno === null) fileAno = new Date().getFullYear();
 
-        for (let i = 0; i < headerRowsToSearch.length; i++) {
-          const row = (headerRowsToSearch[i] || []).map(cell => String(cell || "").toUpperCase().trim());
+        for (let i = 0; i < rowsToScan.length; i++) {
+          const row = (rowsToScan[i] || []).map(cell => 
+            cell ? cell.toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim() : ""
+          );
           
-          // A valid header row should have specific keys and NOT look like a Total/Summary row
-          const hasSpecificKey = row.some(cell => ['CID', 'ATEND.', 'PACIENTE', 'QTD.', 'TIPO DE DOCUMENTO', 'NOME DO PACIENTE'].some(k => cell === k || (cell.includes(k) && cell.length < 25)));
-          const hasGeneralKey = row.some(cell => headerKeywords.some(key => cell.includes(key)));
-          
+          if (row.length === 0) continue;
+
+          // A valid header row should have at least one or two identifying keywords
+          const matchCount = row.filter(cell => cell && headerKeywords.some(key => cell.includes(key.toLowerCase()))).length;
+          const isTotalRow = row.some(cell => cell.includes('total') || cell.includes('geral'));
           const filledCells = row.filter(cell => cell.length > 0).length;
-          const isTotalRow = row.some(cell => cell === 'TOTAL' || cell === 'GERAL' || cell.includes('TOTAL DE'));
-          
-          if ((hasSpecificKey || hasGeneralKey) && filledCells >= 3 && !isTotalRow) {
+
+          // Se tiver pelo menos 2 colunas que pareçam cabeçalho e não for uma linha de total
+          if (matchCount >= 2 && filledCells >= 2 && !isTotalRow) {
             headerRowIndex = i;
             break;
           }
         }
 
         if (headerRowIndex === -1) {
-          throw new Error("Cabeçalho não encontrado. O arquivo deve conter colunas como 'CID', 'Paciente' ou 'Atend'.");
+          // Se não encontrou cabeçalho claramente, procura por QUALQUER linha que tenha 'CID' ou 'PROCEDIMENTO' ou 'PACIENTE'
+          for (let i = 0; i < rowsToScan.length; i++) {
+            const rowStr = JSON.stringify(rowsToScan[i]).toLowerCase();
+            if (rowStr.includes('cid') || rowStr.includes('procedimento') || rowStr.includes('paciente')) {
+              headerRowIndex = i;
+              break;
+            }
+          }
+        }
+
+        if (headerRowIndex === -1) {
+          headerRowIndex = 0;
+          console.warn("Cabeçalho não identificado claramente, usando linha 0 como padrão.");
         }
 
         // 4. Extract headers and data
         const rawHeaders = allRows[headerRowIndex].map(h => String(h || "").trim());
         const rawData = allRows.slice(headerRowIndex + 1);
         
+        console.log(`[Parser] Arquivo: ${file.name}`);
+        console.log(`[Parser] Header detectado na linha: ${headerRowIndex + 1}`);
+        console.log(`[Parser] Colunas encontradas:`, rawHeaders);
+
         const jsonData = rawData
           .filter(row => row && row.some(cell => String(cell || "").trim().length > 0))
           .map((row, idx) => {
@@ -204,7 +224,7 @@ export const parseExcelFile = async (file: File): Promise<{ type: FileType; data
                 obj[header] = row[index] !== undefined ? row[index] : "";
               }
             });
-            obj.__rowNum = headerRowIndex + idx + 2; // Keep track for error reporting
+            obj.__rowNum = headerRowIndex + idx + 2;
             return obj;
           });
 
@@ -278,23 +298,91 @@ export const extractDateFromContent = (data: any[][]): { mes: number | null; ano
   return { mes, ano };
 };
 
-export const processCID = (rawCid: string): { code: string; description: string } => {
-  if (!rawCid) return { code: 'N/A', description: 'N/A' };
+export const getCIDChapter = (code: string): string => {
+  if (!code || code === 'N/I') return 'Não Identificado';
   
-  // Format typically "R11: Desc" or "R11 - Desc"
-  const separators = [':', '-', ' '];
+  const letter = code.charAt(0).toUpperCase();
+  const num = parseInt(code.substring(1, 3));
+
+  if (isNaN(num)) return 'Outros';
+
+  if (letter === 'A' || letter === 'B') return 'Doenças Infecciosas e Parasitárias';
+  if (letter === 'C' || (letter === 'D' && num <= 48)) return 'Neoplasias (Tumores)';
+  if (letter === 'D' && num >= 50) return 'D. Sangue e Órgãos Hematopoiéticos';
+  if (letter === 'E') return 'D. Endócrinas, Nutricionais e Metabólicas';
+  if (letter === 'F') return 'Transtornos Mentais e Comportamentais';
+  if (letter === 'G') return 'Doenças do Sistema Nervoso';
+  if (letter === 'H' && num <= 59) return 'Doenças do Olho e Anexos';
+  if (letter === 'H' && num >= 60) return 'Doenças do Ouvido';
+  if (letter === 'I') return 'Doenças do Sistema Circulatório';
+  if (letter === 'J') return 'Doenças do Sistema Respiratório';
+  if (letter === 'K') return 'Doenças do Sistema Digestivo';
+  if (letter === 'L') return 'Doenças da Pele';
+  if (letter === 'M') return 'D. Sistema Osteomuscular';
+  if (letter === 'N') return 'Doenças do Sistema Geniturinário';
+  if (letter === 'O') return 'Gravidez, Parto e Puerpério';
+  if (letter === 'P') return 'Afecções Perinatais';
+  if (letter === 'Q') return 'Malformações Congênitas';
+  if (letter === 'R') return 'Sintomas e Achados Sinais Clínicos';
+  if (letter === 'S' || letter === 'T') return 'Lesões e Envenenamentos';
+  if (letter >= 'V' && letter <= 'Y') return 'Causas Externas';
+  if (letter === 'Z') return 'Contatos com Serviços de Saúde';
   
-  // Check for colon first as it's most common
-  if (rawCid.includes(':')) {
-    const parts = rawCid.split(':');
-    return { code: parts[0].trim(), description: parts.slice(1).join(':').trim() };
+  return 'Outros/Especiais';
+};
+
+export const processCID = (rawCid: any): { code: string; description: string; chapter: string } => {
+  if (rawCid === undefined || rawCid === null) return { code: 'N/I', description: 'Não Identificado', chapter: 'Não Identificado' };
+  
+  const normalized = String(rawCid).trim();
+  if (
+    normalized === '' || 
+    normalized.toLowerCase() === 'ni' || 
+    normalized.toLowerCase().includes('não identificado') ||
+    normalized.toLowerCase().includes('nao identificado') ||
+    normalized.toLowerCase() === 'n/a' ||
+    normalized === '-' ||
+    normalized === '.'
+  ) {
+    return { code: 'N/I', description: 'Não Identificado', chapter: 'Não Identificado' };
   }
 
-  // Fallback regex for "CODE[space]Description" or "CODE-Description"
-  const match = rawCid.match(/^([A-Z]\d{2,3})\s*[\-\s]\s*(.*)$/i);
+  // Tenta capturar o padrão CID (Letra + 2 ou 3 números)
+  const cidRegex = /([A-Z][0-9]{2,3}(?:\.[0-9A-Z]{1,2})?)/i;
+  const match = normalized.match(cidRegex);
+  
+  let code = 'N/I';
+  let description = normalized;
+
   if (match) {
-    return { code: match[1].trim(), description: match[2].trim() };
+    code = match[1].trim().toUpperCase();
+    
+    let rest = normalized;
+    const parts = normalized.split(match[1]);
+    if (parts.length > 1) {
+      rest = parts.slice(1).join(match[1]).trim();
+      description = rest.replace(/^[\s\-\:\.]+/ , '').trim();
+    }
+    
+    if (!description && parts[0].trim()) {
+      description = parts[0].replace(/[\s\-\:\.]+$/ , '').trim();
+    }
+  } else {
+    // Fallback para códigos curtos (ex: Z001)
+    const fallbackRegex = /([A-Z][0-9]{3})/i;
+    const fbMatch = normalized.match(fallbackRegex);
+    if (fbMatch) {
+      code = fbMatch[1].toUpperCase();
+    }
   }
 
-  return { code: rawCid.trim(), description: '' };
+  if (!description || description === code) {
+    description = 'Diagnóstico não especificado';
+  }
+
+  return { 
+    code, 
+    description,
+    chapter: getCIDChapter(code)
+  };
 };

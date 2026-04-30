@@ -12,6 +12,7 @@ import { supabase } from '../lib/supabase';
 import { AtestadoDoc } from '../types';
 import { UNITS } from '../constants';
 import DateRangeFilter, { DateRange } from './DateRangeFilter';
+import { processCID } from '../lib/excelProcessor';
 import {
   BarChart,
   Bar,
@@ -50,23 +51,53 @@ const DashboardAtestados: React.FC<DashboardAtestadosProps> = ({ filters }) => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      let query = supabase.from('atestados').select('*');
-      
-      if (filters.ano !== 'all') {
-        query = query.eq('ano', Number(filters.ano));
-      }
+      // Recursive fetch for atestados
+      const fetchAll = async (table: string, filters: FilterState) => {
+        let allRecords: any[] = [];
+        let from = 0;
+        const step = 1000;
+        let hasMore = true;
 
-      if (filters.unidade !== 'all') {
-        query = query.eq('unidade', filters.unidade);
-      }
+        // Get total count first
+        let queryCount = supabase.from(table).select('*', { count: 'exact', head: true });
+        if (filters.ano !== 'all') queryCount = queryCount.eq('ano', Number(filters.ano));
+        if (filters.unidade !== 'all') queryCount = queryCount.eq('unidade', filters.unidade);
+        if (filters.mes !== 'all') queryCount = queryCount.eq('mes', Number(filters.mes));
+        
+        const { count } = await queryCount;
+        const totalToFetch = count || 0;
+        console.log(`[DashboardAtestados] Total no banco: ${totalToFetch}`);
 
-      if (filters.mes !== 'all') {
-        query = query.eq('mes', Number(filters.mes));
-      }
-
-      const { data: records, error } = await query;
+        while (hasMore) {
+          let query = supabase.from(table)
+            .select('*')
+            .range(from, from + step - 1)
+            .order('id', { ascending: true });
           
-      if (error) throw error;
+          if (filters.ano !== 'all') query = query.eq('ano', Number(filters.ano));
+          if (filters.unidade !== 'all') query = query.eq('unidade', filters.unidade);
+          if (filters.mes !== 'all') query = query.eq('mes', Number(filters.mes));
+
+          const { data, error } = await query;
+          if (error) throw error;
+          
+          if (data && data.length > 0) {
+            allRecords = [...allRecords, ...data];
+            console.log(`[DashboardAtestados] Carregados ${allRecords.length} de ${totalToFetch}...`);
+            if (data.length < step || allRecords.length >= totalToFetch) {
+              hasMore = false;
+            } else {
+              from += step;
+            }
+          } else {
+            hasMore = false;
+          }
+          if (from > 150000) break;
+        }
+        return allRecords;
+      };
+
+      const records = await fetchAll('atestados', filters);
       setData(records as AtestadoDoc[] || []);
 
       // --- FETCH HISTORICAL DATA FOR SELECTED UNIT ---
@@ -86,13 +117,30 @@ const DashboardAtestados: React.FC<DashboardAtestadosProps> = ({ filters }) => {
         }
 
         const historicalPromises = monthsToFetch.map(async ({ m, y }) => {
-          const { data } = await supabase.from('atestados')
-            .select('quantidade')
-            .eq('unidade', filters.unidade)
-            .eq('mes', m)
-            .eq('ano', y);
-          
-          const total = (data || []).reduce((acc, curr) => acc + curr.quantidade, 0);
+          let total = 0;
+          let hFrom = 0;
+          let hHasMore = true;
+
+          while (hHasMore) {
+            const { data, error } = await supabase.from('atestados')
+              .select('quantidade')
+              .range(hFrom, hFrom + 999)
+              .order('id', { ascending: true }) // Added order
+              .eq('unidade', filters.unidade)
+              .eq('mes', m)
+              .eq('ano', y);
+            
+            if (error) throw error;
+            if (data && data.length > 0) {
+              total += data.reduce((acc, curr) => acc + curr.quantidade, 0);
+              hHasMore = data.length === 1000;
+              hFrom += 1000;
+            } else {
+              hHasMore = false;
+            }
+            if (hFrom > 100000) break;
+          }
+
           const monthLabels = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
           
           return {
@@ -134,19 +182,58 @@ const DashboardAtestados: React.FC<DashboardAtestadosProps> = ({ filters }) => {
   // --- NEW: RANKING OF CIDS ---
   const cidRanking = React.useMemo(() => {
     const rankingMap: Record<string, { total: number; desc: string }> = {};
+    
     filteredData.forEach(d => {
-      const code = d.cid_codigo || 'N/I';
-      const desc = d.cid_descricao || 'Não Identificado';
+      let code = (d.cid_codigo || 'N/I').trim().toUpperCase();
+      let desc = d.cid_descricao || 'Não Identificado';
+
+      // Inteligência adicional: Se o código for N/I mas a descrição tiver um CID, tenta extrair
+      if (code === 'N/I' && desc !== 'Não Identificado') {
+        const reParsed = processCID(desc);
+        if (reParsed.code !== 'N/I') {
+          code = reParsed.code;
+          desc = reParsed.description || desc;
+        }
+      }
+      
+      if (code === '' || code === 'NI' || code === 'N/A' || code.includes('NÃO IDENTIFICADO')) {
+        code = 'N/I';
+      }
+      
       if (!rankingMap[code]) {
         rankingMap[code] = { total: 0, desc };
       }
       rankingMap[code].total += d.quantidade;
     });
 
-    return Object.entries(rankingMap)
+    console.log('CIDs processados no Dashboard:', rankingMap);
+
+    const sortedAll = Object.entries(rankingMap)
       .map(([code, data]) => ({ code, total: data.total, desc: data.desc }))
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 10); // Top 10
+      .sort((a, b) => b.total - a.total);
+
+    const validos = sortedAll.filter(item => item.code !== 'N/I');
+    const ni = sortedAll.find(item => item.code === 'N/I');
+
+    // Pegar o top 10, mas se tiver N/I, ele deve ser incluído no final se estiver entre os maiores
+    // ou simplesmente adicionado se houver espaço. 
+    // A regra solicitada é: separar válidos, pegar top, adicionar NI no fim do resultado exibido.
+    
+    let result = validos.slice(0, 10);
+    
+    // Se o NI for relevante (estiver no top 10 original), vamos incluí-lo
+    const isNIInTop10 = sortedAll.slice(0, 10).some(item => item.code === 'N/I');
+    
+    if (isNIInTop10 && ni) {
+      // Se NI estava no top 10, garantimos que ele apareça, mesmo que desloque o 10º
+      if (result.length >= 10) {
+        result[9] = ni;
+      } else {
+        result.push(ni);
+      }
+    }
+
+    return result;
   }, [filteredData]);
 
   if (loading) return <div className="p-8 text-center text-slate-400 font-bold uppercase tracking-widest text-xs">Carregando Dashboard de Atestados...</div>;

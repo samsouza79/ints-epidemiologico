@@ -306,10 +306,31 @@ const UploadSection: React.FC<UploadSectionProps> = ({ profile }) => {
           const tableName = type === 'CIDs' ? 'cids' : type.toLowerCase();
           const rawRows: any[] = [];
 
+          // Dynamic Column Mapper helper
+          const findCol = (rowKeys: string[], ...terms: string[]) => {
+            const normalizedTerms = terms.map(t => t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+            return rowKeys.find(k => {
+              const nk = k.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+              return normalizedTerms.some(t => nk.includes(t));
+            });
+          };
+
+          const cleanup = (val: any) => {
+            if (val === undefined || val === null) return null;
+            const str = String(val).trim();
+            return str === "" || str === "-" || str === "." ? null : str;
+          };
+
+          if (data.length > 0) {
+            console.log(`[Upload] Iniciando processamento de ${file.name} (${type})`);
+            console.log(`[Upload] Exemplo da primeira linha bruta:`, data[0]);
+          }
+
           data.forEach((row, idx) => {
             // IGNORE EMPTY ROWS
             if (!row || Object.values(row).every(v => v === "" || v === null || v === undefined)) return;
 
+            const rowKeys = Object.keys(row);
             const mes = parseInt(row.Mês || row['Mês'] || meta.mes || new Date().getMonth() + 1);
             const ano = parseInt(row.Ano || row['Ano'] || meta.ano || new Date().getFullYear());
 
@@ -322,82 +343,76 @@ const UploadSection: React.FC<UploadSectionProps> = ({ profile }) => {
 
             try {
               if (type === 'Atendimentos') {
-                const qtyKey = Object.keys(row).find(k => k.toUpperCase().includes('QUANTIDADE') || k.toUpperCase() === 'TOTAL' || k.toUpperCase().includes('ATEND'));
-                // Count lines if no qtyKey, else sum qtyKey
+                const qtyKey = findCol(rowKeys, 'quantidade', 'total', 'atend', 'qtd');
                 processedRow.quantidade = qtyKey ? (parseInt(row[qtyKey] || 0) || 0) : 1;
                 rawRows.push(processedRow);
-              } else if (type === 'CIDs') {
-                const cidKey = Object.keys(row).find(k => {
-                  const nk = k.toUpperCase().trim();
-                  return nk === 'CID' || nk === 'CÓDIGO CID' || nk === 'DIAGNÓSTICO';
-                });
+              } 
+              else if (type === 'CIDs') {
+                const cidKey = findCol(rowKeys, 'cid', 'codigo cid', 'diagnostico', 'cod cid');
+                const pacKey = findCol(rowKeys, 'paciente', 'nome', 'pront');
                 
-                const cidVal = String(row[cidKey || ''] || "").trim();
-                if (!cidVal) return; 
+                const cidVal = cleanup(row[cidKey || '']);
+                const pacVal = cleanup(row[pacKey || '']) || "Não Identificado";
 
                 const { code, description } = processCID(cidVal);
                 processedRow.codigo = code;
                 processedRow.descricao = description;
+                processedRow.paciente = pacVal;
                 
-                const pacKey = Object.keys(row).find(k => k.toUpperCase().includes('PACIENTE') || k.toUpperCase().includes('NOME'));
-                processedRow.paciente = pacKey ? String(row[pacKey] || "").trim() : "Não Identificado";
+                if (processedRow.codigo !== 'N/I' || processedRow.paciente !== 'Não Identificado') {
+                  rawRows.push(processedRow);
+                }
+              } 
+              else if (type === 'Exames') {
+                const qtyKey = findCol(rowKeys, 'qtd', 'quantidade', 'total');
+                const examKey = findCol(rowKeys, 'procedimento', 'exame', 'descricao');
                 
+                let qty = 1;
+                if (qtyKey) {
+                  const val = parseInt(row[qtyKey] || 0);
+                  qty = isNaN(val) || val === 0 ? 1 : val;
+                }
+                
+                processedRow.nome = cleanup(row[examKey || '']) || "Não Identificado";
+                processedRow.quantidade = qty;
                 rawRows.push(processedRow);
-              } else if (type === 'Atestados' || type === 'Exames') {
-                // Priority: QTD, QUANTIDADE, TOTAL
-                let qtyKey = Object.keys(row).find(k => {
-                  const uk = k.toUpperCase();
-                  return uk.includes('QTD') || uk.includes('QUANTIDADE') || uk.includes('TOTAL');
-                });
+              } 
+              else if (type === 'Atestados') {
+                const cidKey = findCol(rowKeys, 'cid', 'diagnostico', 'causa', 'classificacao', 'cid10', 'cod cid', 'cod_cid', 'descricao cid');
                 
-                // Fallback: PROCEDIMENTO (might be used if no QTD exists, but we'll default to 1)
-                if (!qtyKey) {
-                  qtyKey = Object.keys(row).find(k => k.toUpperCase().includes('PROCEDIMENTO'));
+                const cidVal = cleanup(row[cidKey || '']);
+                const { code, description } = processCID(cidVal);
+                
+                processedRow.cid_codigo = code;
+                processedRow.cid_descricao = description;
+                processedRow.quantidade = 1; // Default to 1 for each line
+
+                // Fallback robusto se CID não foi mapeado pela coluna
+                if (code === 'N/I' && !cidKey) {
+                   // Tenta procurar qualquer valor que pareça um CID na linha
+                   for (const key of rowKeys) {
+                     const val = String(row[key]);
+                     if (/^[A-Z][0-9]{2,3}/i.test(val)) {
+                       const fb = processCID(val);
+                       if (fb.code !== 'N/I') {
+                         processedRow.cid_codigo = fb.code;
+                         processedRow.cid_descricao = fb.description;
+                         break;
+                       }
+                     }
+                   }
                 }
 
-                // Atestados: each line = 1, try to find CID
-                // Exames: sum Qtd column if numeric, else 1, try to find Procedimento
-                let qty = 1;
-                if (type === 'Exames') {
-                  const qtyKey = Object.keys(row).find(k => {
-                    const uk = k.toUpperCase();
-                    return uk.includes('QTD') || uk.includes('QUANTIDADE') || uk.includes('TOTAL');
-                  });
-                  if (qtyKey) {
-                    const val = parseInt(row[qtyKey] || 0);
-                    qty = isNaN(val) || val === 0 ? 1 : val;
-                  }
-                  
-                  const examKey = Object.keys(row).find(k => k.toUpperCase().includes('PROCEDIMENTO') || k.toUpperCase().includes('EXAME'));
-                  if (examKey) {
-                    processedRow.nome = String(row[examKey] || "Outros").trim();
-                  } else {
-                    processedRow.nome = "Não Identificado";
-                  }
-                } else if (type === 'Atestados') {
-                  const cidKey = Object.keys(row).find(k => {
-                    const nk = k.toUpperCase().trim();
-                    return nk === 'CID' || nk === 'CÓDIGO CID' || nk === 'DIAGNÓSTICO' || nk.includes('CID');
-                  });
-                  
-                  if (cidKey) {
-                    const cidVal = String(row[cidKey] || "").trim();
-                    const { code, description } = processCID(cidVal);
-                    processedRow.cid_codigo = code;
-                    processedRow.cid_descricao = description;
-                  } else {
-                    processedRow.cid_codigo = "N/I";
-                    processedRow.cid_descricao = "Não Identificado";
-                  }
-                }
-                
-                processedRow.quantidade = qty;
                 rawRows.push(processedRow);
               }
             } catch (rowErr) {
               console.warn(`Erro na linha ${row.__rowNum}:`, rowErr);
             }
           });
+
+          if (rawRows.length > 0) {
+            console.log(`[Upload] Exemplo de linha processada:`, rawRows[0]);
+          }
 
           // Group by unit/month/year/extra to ensure only ONE row per key is sent to Supabase
           const grouped: Record<string, any> = {};

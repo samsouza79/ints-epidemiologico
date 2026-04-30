@@ -52,23 +52,56 @@ const DashboardExames: React.FC<DashboardExamesProps> = ({ filters }) => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      let query = supabase.from('exames').select('*');
-      
-      if (filters.ano !== 'all') {
-        query = query.eq('ano', Number(filters.ano));
-      }
+      // Recursive fetch to bypass PostgREST limit (default 1000)
+      const fetchAll = async (table: string, filters: FilterState) => {
+        let allRecords: any[] = [];
+        let from = 0;
+        const step = 1000;
+        let hasMore = true;
 
-      if (filters.unidade !== 'all') {
-        query = query.eq('unidade', filters.unidade);
-      }
+        // Get total count first to be sure
+        let queryCount = supabase.from(table).select('*', { count: 'exact', head: true });
+        if (filters.ano !== 'all') queryCount = queryCount.eq('ano', Number(filters.ano));
+        if (filters.unidade !== 'all') queryCount = queryCount.eq('unidade', filters.unidade);
+        if (filters.mes !== 'all') queryCount = queryCount.eq('mes', Number(filters.mes));
+        
+        const { count } = await queryCount;
+        const totalToFetch = count || 0;
+        console.log(`[DashboardExames] Total de registros no banco para os filtros: ${totalToFetch}`);
 
-      if (filters.mes !== 'all') {
-        query = query.eq('mes', Number(filters.mes));
-      }
-
-      const { data: records, error } = await query;
+        while (hasMore) {
+          let query = supabase.from(table)
+            .select('*')
+            .range(from, from + step - 1)
+            .order('id', { ascending: true }); // Crucial for range pagination
           
-      if (error) throw error;
+          if (filters.ano !== 'all') query = query.eq('ano', Number(filters.ano));
+          if (filters.unidade !== 'all') query = query.eq('unidade', filters.unidade);
+          if (filters.mes !== 'all') query = query.eq('mes', Number(filters.mes));
+
+          const { data, error } = await query;
+          if (error) throw error;
+          
+          if (data && data.length > 0) {
+            allRecords = [...allRecords, ...data];
+            console.log(`[DashboardExames] Carregados ${allRecords.length} de ${totalToFetch}...`);
+            
+            if (data.length < step || allRecords.length >= totalToFetch) {
+              hasMore = false;
+            } else {
+              from += step;
+            }
+          } else {
+            hasMore = false;
+          }
+          
+          if (from > 200000) break; // Increased safety break
+        }
+        return allRecords;
+      };
+
+      const records = await fetchAll('exames', filters);
+      console.log(`[DashboardExames] Total de registros recuperados: ${records.length}`);
       setData(records as ExameDoc[] || []);
 
       // --- FETCH HISTORICAL DATA FOR SELECTED UNIT ---
@@ -88,13 +121,31 @@ const DashboardExames: React.FC<DashboardExamesProps> = ({ filters }) => {
         }
 
         const historicalPromises = monthsToFetch.map(async ({ m, y }) => {
-          const { data } = await supabase.from('exames')
-            .select('quantidade')
-            .eq('unidade', filters.unidade)
-            .eq('mes', m)
-            .eq('ano', y);
-          
-          const total = (data || []).reduce((acc, curr) => acc + curr.quantidade, 0);
+          // Also need full fetch for historical if data is large
+          let total = 0;
+          let hFrom = 0;
+          let hHasMore = true;
+
+          while (hHasMore) {
+            const { data, error } = await supabase.from('exames')
+              .select('quantidade')
+              .range(hFrom, hFrom + 999)
+              .order('id', { ascending: true }) // Added order
+              .eq('unidade', filters.unidade)
+              .eq('mes', m)
+              .eq('ano', y);
+            
+            if (error) throw error;
+            if (data && data.length > 0) {
+              total += data.reduce((acc, curr) => acc + curr.quantidade, 0);
+              if (data.length < 1000) hHasMore = false;
+              else hFrom += 1000;
+            } else {
+              hHasMore = false;
+            }
+            if (hFrom > 100000) break;
+          }
+
           const monthLabels = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
           
           return {

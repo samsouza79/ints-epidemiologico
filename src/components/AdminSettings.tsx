@@ -48,6 +48,8 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ user, profile }) => {
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [deletingUnit, setDeletingUnit] = useState<string | null>(null);
   const [isWiping, setIsWiping] = useState(false);
+  const [showWipeModal, setShowWipeModal] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [activeSubTab, setActiveSubTab] = useState<'goals' | 'users' | 'history' | 'danger'>('goals');
 
   const isAdmin = profile?.role === 'admin';
@@ -262,27 +264,26 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ user, profile }) => {
   };
 
   const wipeAllData = async () => {
-    if (!window.confirm('PERIGO: Você está prestes a apagar TODO o banco de dados. Deseja continuar?')) return;
-    if (!window.confirm('CONFIRME NOVAMENTE: Esta ação apagará todos os atendimentos, CIDs, exames e histórico.')) return;
-    
     setIsWiping(true);
+    setShowWipeModal(false);
     try {
       const tables = ['atendimentos', 'cids', 'atestados', 'exames', 'uploads'];
       for (const table of tables) {
         const { error } = await supabase
           .from(table)
           .delete()
-          .gte('created_at', '1970-01-01T00:00:00Z');
+          .neq('id', 0);
+          
         if (error) {
           console.error(`Error wiping table ${table}:`, error);
           throw error;
         }
       }
-      setMessage({ type: 'success', text: 'Banco de dados apagado com sucesso.' });
+      setShowSuccessModal(true);
       fetchHistory();
     } catch (error) {
       console.error(error);
-      setMessage({ type: 'error', text: 'Erro ao apagar banco de dados.' });
+      setMessage({ type: 'error', text: 'Erro ao apagar banco de dados. Verifique sua conexão ou permissões.' });
     } finally {
       setIsWiping(false);
     }
@@ -761,13 +762,77 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ user, profile }) => {
             
             <div className="flex justify-center p-8 bg-white/50 rounded-3xl border border-rose-100">
                <button 
-                onClick={wipeAllData}
+                onClick={() => setShowWipeModal(true)}
                 disabled={isWiping}
                 className="px-12 py-6 bg-rose-500 text-white rounded-3xl text-sm font-black uppercase tracking-widest hover:bg-rose-600 transition-all shadow-xl hover:shadow-rose-500/20 active:scale-95 disabled:opacity-50"
               >
                 {isWiping ? 'Apagando tudo...' : 'LIMPAR BANCO DE DADOS COMPLETO'}
               </button>
             </div>
+
+            {/* Modal de Confirmação */}
+            <AnimatePresence>
+              {showWipeModal && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.9 }}
+                    className="bg-white rounded-[32px] p-8 max-w-md w-full shadow-2xl space-y-6 text-center"
+                  >
+                    <div className="w-20 h-20 bg-rose-100 text-rose-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <AlertTriangle className="w-10 h-10" />
+                    </div>
+                    <div className="space-y-2">
+                      <h3 className="text-xl font-black text-slate-800">Você tem certeza disso?</h3>
+                      <p className="text-sm text-slate-500 font-medium leading-relaxed">Todos os dados do sistema serãos apagados permanentemente. Esta ação não pode ser desfeita.</p>
+                    </div>
+                    <div className="flex gap-4">
+                      <button 
+                        onClick={() => setShowWipeModal(false)}
+                        className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-slate-200 transition-all"
+                      >
+                        Cancelar
+                      </button>
+                      <button 
+                        onClick={wipeAllData}
+                        className="flex-1 py-4 bg-rose-500 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-rose-600 transition-all shadow-lg shadow-rose-500/20"
+                      >
+                        Sim, Apagar Tudo
+                      </button>
+                    </div>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+
+            {/* Modal de Sucesso */}
+            <AnimatePresence>
+              {showSuccessModal && (
+                <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+                  <motion.div 
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 20 }}
+                    className="bg-white rounded-[32px] p-8 max-w-md w-full shadow-2xl space-y-6 text-center"
+                  >
+                    <div className="w-20 h-20 bg-emerald-100 text-emerald-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <RefreshCw className="w-10 h-10" />
+                    </div>
+                    <div className="space-y-2">
+                      <h3 className="text-xl font-black text-slate-800">Comando Realizado!</h3>
+                      <p className="text-sm text-slate-500 font-medium">O banco de dados foi completamente limpo com sucesso.</p>
+                    </div>
+                    <button 
+                      onClick={() => setShowSuccessModal(false)}
+                      className="w-full py-4 bg-ints-green text-white rounded-2xl font-black uppercase tracking-widest text-[10px] hover:bg-ints-green-dark transition-all shadow-lg shadow-ints-green/20"
+                    >
+                      Entendido
+                    </button>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
           </div>
         );
       default:

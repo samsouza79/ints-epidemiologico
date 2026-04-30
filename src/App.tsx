@@ -68,60 +68,70 @@ export default function App() {
   useEffect(() => {
     fetchFilterOptions();
     
-    // Failsafe: se nada acontecer em 5 segundos, libera o loading
-    const timer = setTimeout(() => {
-      setLoading(current => {
-        if (current) {
-          console.warn("Failsafe: Forçando fim do loading (timeout 5s)");
-          return false;
-        }
-        return current;
-      });
-    }, 5000);
-
     // Check initial session
-    const initSession = async () => {
+    const initAuth = async () => {
       console.log("Iniciando verificação de sessão...");
+      setLoading(true);
+
       try {
+        // 1. Tentar recuperar sessão do localStorage (Master Bypass)
+        const savedMasterSession = localStorage.getItem('master_session');
+        if (savedMasterSession) {
+          const masterData = JSON.parse(savedMasterSession);
+          console.log("Sessão Master recuperada do localStorage");
+          setSession(masterData.session);
+          setProfile(masterData.profile);
+          setLoading(false);
+          return;
+        }
+
+        // 2. Tentar recuperar sessão real do Supabase
         const { data: { session: currentSession }, error } = await supabase.auth.getSession();
         if (error) throw error;
         
-        console.log("Sessão recuperada:", currentSession?.user?.email);
-        setSession(currentSession);
         if (currentSession) {
-          fetchProfile(currentSession.user.id, currentSession.user.email);
+          console.log("Sessão Supabase recuperada:", currentSession.user.email);
+          setSession(currentSession);
+          await fetchProfile(currentSession.user.id, currentSession.user.email);
         }
       } catch (err) {
-        console.error("Error getting session:", err);
+        console.error("Erro ao inicializar sessão:", err);
       } finally {
         setLoading(false);
-        console.log("Loading finalizado (initSession)");
+        console.log("Loading finalizado");
       }
     };
 
-    initSession();
+    initAuth();
 
     // Listen for auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, currentSession) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
       console.log("Auth event:", event, currentSession?.user?.email);
       
-      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') {
-        setSession(currentSession);
+      const isMasterSession = !!localStorage.getItem('master_session');
+
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
         if (currentSession) {
-          fetchProfile(currentSession.user.id, currentSession.user.email);
+          // Se entrou via Supabase real, remove o bypass master
+          localStorage.removeItem('master_session');
+          setSession(currentSession);
+          await fetchProfile(currentSession.user.id, currentSession.user.email);
+          setLoading(false);
         }
       } else if (event === 'SIGNED_OUT') {
-        setSession(null);
-        setProfile(null);
+        // Só limpa o master_session se não houver um evento real de sign out (triggered by user)
+        // No Supabase, SIGNED_OUT pode ocorrer na inicialização se não houver cookie.
+        // Vamos checar se o usuário quer mesmo deslogar.
+        if (!isMasterSession) {
+          setSession(null);
+          setProfile(null);
+        }
+        setLoading(false);
       }
-      
-      setLoading(false);
-      console.log("Loading finalizado (onAuthStateChange)");
     });
 
     return () => {
       subscription.unsubscribe();
-      clearTimeout(timer);
     };
   }, []);
 
@@ -236,14 +246,24 @@ export default function App() {
       // MASTER BYPASS: Especial para o dono do aplicativo não ficar bloqueado
       if (normalizedEmail === 'samdefy.souza@gmail.com' && password === 'Mec@090779') {
         console.log("Master Access Granted");
-        setProfile({
+        const masterProfile = {
           id: 'master-admin',
           email: normalizedEmail,
           nome: 'Administrador Mestre',
           role: 'admin',
           status: 'approved'
-        });
-        setSession({ user: { id: 'master-admin', email: normalizedEmail } } as any);
+        } as Profile;
+        const masterSession = { user: { id: 'master-admin', email: normalizedEmail } } as any;
+        
+        setProfile(masterProfile);
+        setSession(masterSession);
+
+        // Persistir para o refresh da página
+        localStorage.setItem('master_session', JSON.stringify({
+          session: masterSession,
+          profile: masterProfile
+        }));
+        
         return;
       }
 
@@ -271,6 +291,7 @@ export default function App() {
   };
 
   const handleSignOut = async () => {
+    localStorage.removeItem('master_session');
     await supabase.auth.signOut();
     setSession(null);
     setProfile(null);

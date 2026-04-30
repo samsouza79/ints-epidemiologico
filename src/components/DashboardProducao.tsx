@@ -57,28 +57,61 @@ const DashboardProducao: React.FC<DashboardProducaoProps> = ({ filters }) => {
     const fetchData = async () => {
       setLoading(true);
       try {
-        const buildQuery = (table: string) => {
-          let q = supabase.from(table).select('*');
-          if (filters.ano !== 'all') q = q.eq('ano', Number(filters.ano));
-          if (filters.unidade !== 'all') q = q.eq('unidade', filters.unidade);
-          if (filters.mes !== 'all') q = q.eq('mes', Number(filters.mes));
-          return q;
+        const fetchAll = async (table: string, filters: FilterState) => {
+          let allRecords: any[] = [];
+          let from = 0;
+          const step = 1000;
+          let hasMore = true;
+
+          // Get total count first
+          let queryCount = supabase.from(table).select('*', { count: 'exact', head: true });
+          if (filters.ano !== 'all') queryCount = queryCount.eq('ano', Number(filters.ano));
+          if (filters.unidade !== 'all') queryCount = queryCount.eq('unidade', filters.unidade);
+          if (filters.mes !== 'all') queryCount = queryCount.eq('mes', Number(filters.mes));
+          
+          const { count } = await queryCount;
+          const totalToFetch = count || 0;
+          console.log(`[DashboardProducao] Total em ${table}: ${totalToFetch}`);
+
+          while (hasMore) {
+            let query = supabase.from(table)
+              .select('*')
+              .range(from, from + step - 1)
+              .order('id', { ascending: true });
+            
+            if (filters.ano !== 'all') query = query.eq('ano', Number(filters.ano));
+            if (filters.unidade !== 'all') query = query.eq('unidade', filters.unidade);
+            if (filters.mes !== 'all') query = query.eq('mes', Number(filters.mes));
+
+            const { data, error } = await query;
+            if (error) throw error;
+            
+            if (data && data.length > 0) {
+              allRecords = [...allRecords, ...data];
+              console.log(`[DashboardProducao] ${table}: carregados ${allRecords.length} de ${totalToFetch}...`);
+              if (data.length < step || allRecords.length >= totalToFetch) {
+                hasMore = false;
+              } else {
+                from += step;
+              }
+            } else {
+              hasMore = false;
+            }
+            if (from > 200000) break; // Limit safeguard
+          }
+          return allRecords;
         };
 
         const [atendRes, examesRes, atestadosRes, goalsRes] = await Promise.all([
-          filters.tipo === 'all' || filters.tipo === 'cids' ? buildQuery('atendimentos') : Promise.resolve({ data: [], error: null }),
-          filters.tipo === 'all' || filters.tipo === 'exames' ? buildQuery('exames') : Promise.resolve({ data: [], error: null }),
-          filters.tipo === 'all' || filters.tipo === 'atestados' ? buildQuery('atestados') : Promise.resolve({ data: [], error: null }),
+          filters.tipo === 'all' || filters.tipo === 'cids' ? fetchAll('atendimentos', filters) : Promise.resolve([]),
+          filters.tipo === 'all' || filters.tipo === 'exames' ? fetchAll('exames', filters) : Promise.resolve([]),
+          filters.tipo === 'all' || filters.tipo === 'atestados' ? fetchAll('atestados', filters) : Promise.resolve([]),
           supabase.from('settings').select('*').eq('key', 'contractual_goals').single()
         ]);
           
-        if (atendRes.error) throw atendRes.error;
-        if (examesRes.error) throw examesRes.error;
-        if (atestadosRes.error) throw atestadosRes.error;
-
-        setDataAtendimentos(atendRes.data as AtendimentoDoc[] || []);
-        setDataExames(examesRes.data as ExameDoc[] || []);
-        setDataAtestados(atestadosRes.data as AtestadoDoc[] || []);
+        setDataAtendimentos(atendRes as AtendimentoDoc[]);
+        setDataExames(examesRes as ExameDoc[]);
+        setDataAtestados(atestadosRes as AtestadoDoc[]);
 
         const defaultGoals: Record<string, number> = { "CS24": 10289, "CSI": 2058, "UPA": 6174 };
         let goalsData = defaultGoals;
@@ -108,13 +141,30 @@ const DashboardProducao: React.FC<DashboardProducaoProps> = ({ filters }) => {
           const historicalPromises = monthsToFetch.map(async ({ m, y }) => {
             const table = (filters.tipo === 'exames' || filters.tipo === 'atestados') ? filters.tipo : 'atendimentos';
             
-            const { data } = await supabase.from(table)
-              .select('quantidade')
-              .eq('unidade', filters.unidade)
-              .eq('mes', m)
-              .eq('ano', y);
+            let total = 0;
+            let hFrom = 0;
+            let hHasMore = true;
+
+            while (hHasMore) {
+              const { data, error } = await supabase.from(table)
+                .select('quantidade')
+                .range(hFrom, hFrom + 999)
+                .order('id', { ascending: true }) // Added order
+                .eq('unidade', filters.unidade)
+                .eq('mes', m)
+                .eq('ano', y);
+              
+              if (error) throw error;
+              if (data && data.length > 0) {
+                total += data.reduce((acc, curr) => acc + curr.quantidade, 0);
+                hHasMore = data.length === 1000;
+                hFrom += 1000;
+              } else {
+                hHasMore = false;
+              }
+              if (hFrom > 100000) break;
+            }
             
-            const total = (data || []).reduce((acc, curr) => acc + curr.quantidade, 0);
             const monthLabels = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
             
             return {

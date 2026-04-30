@@ -48,11 +48,6 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, user
     window.location.reload();
   };
 
-  const adminOnlyItems = ['upload', 'admin'];
-
-  console.log("Layout render | role:", profile?.role);
-  console.log("Layout render | adminOnlyItems:", adminOnlyItems);
-
   const menuItems = [
     { id: 'producao', label: 'Produção / Metas', icon: BarChart3 },
     { id: 'apoio', label: 'Apoio Assistencial', icon: Activity },
@@ -63,9 +58,10 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, user
     { id: 'upload', label: 'Upload de Arquivos', icon: FileUp },
     { id: 'admin', label: 'Configurações Admin', icon: ShieldCheck },
   ].filter(item => {
-    const isAllowed = !adminOnlyItems.includes(item.id) || profile?.role === 'admin';
-    console.log(`Checking item ${item.id}: allowed=${isAllowed}`);
-    return isAllowed;
+    if (item.id === 'upload' || item.id === 'admin') {
+      return profile?.role === 'admin';
+    }
+    return true;
   });
 
   return (
