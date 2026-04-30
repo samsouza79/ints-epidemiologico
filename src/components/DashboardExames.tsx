@@ -189,7 +189,7 @@ const DashboardExames: React.FC<DashboardExamesProps> = ({ filters }) => {
   const examRanking = React.useMemo(() => {
     const rankingMap: Record<string, number> = {};
     filteredData.forEach(d => {
-      const name = d.nome || 'Não Identificado';
+      const name = d.descricao_exame || d.nome || 'Não Identificado';
       rankingMap[name] = (rankingMap[name] || 0) + d.quantidade;
     });
 
@@ -326,9 +326,8 @@ const DashboardExames: React.FC<DashboardExamesProps> = ({ filters }) => {
                 <div key={idx} className="group flex flex-col gap-1.5">
                   <div className="flex justify-between items-end">
                     <span className="text-[11px] font-bold text-slate-600 truncate max-w-[80%] uppercase tracking-tight">
-                      {idx + 1}. {exam.name}
+                      {idx + 1}. {exam.name} — <span className="font-black text-slate-800">{exam.total.toLocaleString()}</span>
                     </span>
-                    <span className="text-[11px] font-black text-slate-800">{exam.total.toLocaleString()}</span>
                   </div>
                   <div className="w-full bg-slate-100 h-1.5 rounded-full overflow-hidden">
                     <motion.div 

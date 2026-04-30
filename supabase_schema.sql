@@ -46,9 +46,11 @@ CREATE TABLE IF NOT EXISTS public.exames (
   mes INTEGER NOT NULL,
   ano INTEGER NOT NULL,
   quantidade INTEGER DEFAULT 0,
-  nome TEXT,
+  nome TEXT, -- Campo legado/resumo
+  codigo_exame TEXT,
+  descricao_exame TEXT,
   timestamp TIMESTAMPTZ DEFAULT NOW(),
-  CONSTRAINT unique_exame_record UNIQUE (unidade, mes, ano, nome)
+  CONSTRAINT unique_exame_record UNIQUE (unidade, mes, ano, descricao_exame)
 );
 
 -- Tabela de Histórico de Uploads

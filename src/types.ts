@@ -42,6 +42,8 @@ export interface ExameDoc {
   ano: number;
   quantidade: number;
   nome?: string;
+  codigo_exame?: string;
+  descricao_exame?: string;
   timestamp: string;
 }
 

@@ -365,7 +365,8 @@ const UploadSection: React.FC<UploadSectionProps> = ({ profile }) => {
               } 
               else if (type === 'Exames') {
                 const qtyKey = findCol(rowKeys, 'qtd', 'quantidade', 'total');
-                const examKey = findCol(rowKeys, 'procedimento', 'exame', 'descricao');
+                const examDescKey = findCol(rowKeys, 'descricao_exame', 'procedimento', 'exame', 'descricao');
+                const examCodeKey = findCol(rowKeys, 'codigo_exame', 'codigo_procedimento', 'cod_exame');
                 
                 let qty = 1;
                 if (qtyKey) {
@@ -373,7 +374,12 @@ const UploadSection: React.FC<UploadSectionProps> = ({ profile }) => {
                   qty = isNaN(val) || val === 0 ? 1 : val;
                 }
                 
-                processedRow.nome = cleanup(row[examKey || '']) || "Não Identificado";
+                const desc = cleanup(row[examDescKey || '']) || "Não Identificado";
+                const code = cleanup(row[examCodeKey || '']) || "N/I";
+                
+                processedRow.descricao_exame = desc;
+                processedRow.codigo_exame = code;
+                processedRow.nome = desc; // Sync legacy 'nome' with description
                 processedRow.quantidade = qty;
                 rawRows.push(processedRow);
               } 
@@ -432,7 +438,7 @@ const UploadSection: React.FC<UploadSectionProps> = ({ profile }) => {
             resultsSummary.CIDs += finalRowsToInsert.length;
           } else if (type === 'Exames') {
             rawRows.forEach(row => {
-              const key = `${row.unidade}|${row.mes}|${row.ano}|${row.nome}`;
+              const key = `${row.unidade}|${row.mes}|${row.ano}|${row.descricao_exame}`;
               if (!grouped[key]) {
                 grouped[key] = { ...row };
               } else {
@@ -474,7 +480,7 @@ const UploadSection: React.FC<UploadSectionProps> = ({ profile }) => {
             if (type === 'CIDs') {
               conflictCols = 'unidade,mes,ano,paciente,codigo';
             } else if (type === 'Exames') {
-              conflictCols = 'unidade,mes,ano,nome';
+              conflictCols = 'unidade,mes,ano,descricao_exame';
             } else if (type === 'Atestados') {
               conflictCols = 'unidade,mes,ano,cid_codigo';
             }
