@@ -15,8 +15,9 @@ import {
   Cell,
   Legend
 } from 'recharts';
-import { Activity, Search, Filter, TrendingUp, Users, BarChart2 } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { Activity, Search, Filter, TrendingUp, Users, BarChart2, Bell, AlertTriangle, CheckCircle, XCircle, Clock } from 'lucide-react';
+import { motion } from 'motion/react';
+import { supabase, handleSupabaseError } from '../lib/supabase';
 import { CidDoc } from '../types';
 import { INSTITUTIONAL_GREEN } from '../constants';
 import DateRangeFilter, { DateRange } from './DateRangeFilter';
@@ -32,6 +33,7 @@ const DashboardEpidemio: React.FC<DashboardEpidemioProps> = ({ filters }) => {
   const [data, setData] = useState<CidDoc[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [notificacaoFilter, setNotificacaoFilter] = useState<'all' | 'pendente' | 'notificado' | 'ignorado'>('all');
 
   useEffect(() => {
     const fetchData = async () => {
@@ -97,6 +99,28 @@ const DashboardEpidemio: React.FC<DashboardEpidemioProps> = ({ filters }) => {
   const isDataTypeMatch = filters.tipo === 'all' || filters.tipo === 'cids';
   const filteredData = isDataTypeMatch ? data : [];
 
+  // Notification Stats
+  const notificaveis = filteredData.filter(d => d.is_notificavel);
+  const pendentes = notificaveis.filter(d => d.notificacao_status === 'pendente');
+  const notificados = notificaveis.filter(d => d.notificacao_status === 'notificado');
+
+  const updateNotificacaoStatus = async (id: string, newStatus: 'notificado' | 'ignorado') => {
+    try {
+      const { error } = await supabase
+        .from('cids')
+        .update({ notificacao_status: newStatus })
+        .eq('id', id);
+
+      if (error) throw error;
+
+      // Update local state
+      setData(prev => prev.map(item => item.id === id ? { ...item, notificacao_status: newStatus } : item));
+    } catch (err) {
+      console.error('Erro ao atualizar status da notificação:', err);
+      alert('Erro ao atualizar o status.');
+    }
+  };
+
   const chapterCounts = filteredData.reduce((acc, curr) => {
     let code = (curr.codigo || 'N/I').trim().toUpperCase();
     const chapter = getCIDChapter(code);
@@ -149,6 +173,18 @@ const DashboardEpidemio: React.FC<DashboardEpidemioProps> = ({ filters }) => {
     .filter(item => item.name.toLowerCase().includes(searchTerm.toLowerCase()))
     .sort((a, b) => Number(b.count) - Number(a.count));
 
+  // Notification cases for the dedicated table
+  const notificationTableData = notificaveis
+    .filter(d => {
+      if (notificacaoFilter === 'all') return true;
+      return d.notificacao_status === notificacaoFilter;
+    })
+    .filter(d => {
+      if (!searchTerm) return true;
+      return (d.codigo + d.descricao + d.paciente).toLowerCase().includes(searchTerm.toLowerCase());
+    })
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
   // Data for Unit Comparison
   const unitsForComparison = filters.unidade === 'all' 
     ? Array.from(new Set(filteredData.map(d => d.unidade)))
@@ -179,58 +215,224 @@ const DashboardEpidemio: React.FC<DashboardEpidemioProps> = ({ filters }) => {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="card-minimal flex items-center gap-6">
-          <div className="p-4 bg-green-50 rounded-2xl">
-            <Activity className="w-8 h-8 text-ints-green" />
+      {/* Alerta de Notificações Pendentes */}
+      {pendentes.length > 0 && (
+        <motion.div 
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          className="bg-rose-50 border-l-4 border-rose-500 p-4 rounded-r-xl flex items-center justify-between"
+        >
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-rose-100 rounded-full animate-pulse">
+              <AlertTriangle className="w-5 h-5 text-rose-600" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-rose-800">⚠️ Casos com notificação obrigatória detectados</p>
+              <p className="text-xs text-rose-600 font-medium">Existem {pendentes.length} notificações compulsórias pendentes de envio à vigilância epidemiológica.</p>
+            </div>
+          </div>
+          <button 
+            onClick={() => {
+              setNotificacaoFilter('pendente');
+              const el = document.getElementById('notificacoes-section');
+              el?.scrollIntoView({ behavior: 'smooth' });
+            }}
+            className="px-4 py-2 bg-rose-600 text-white text-[10px] font-bold uppercase tracking-widest rounded-lg hover:bg-rose-700 transition-all"
+          >
+            Ver Pendências
+          </button>
+        </motion.div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <div className="card-minimal flex items-center gap-4">
+          <div className="p-3 bg-green-50 rounded-2xl">
+            <Activity className="w-6 h-6 text-ints-green" />
           </div>
           <div>
-            <p className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">Total de Notificações</p>
-            <h3 className="text-3xl font-black text-slate-700">{filteredData.reduce((a, b) => a + Number(b.quantidade), 0).toLocaleString()}</h3>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Sincronizado</p>
+            <h3 className="text-2xl font-black text-slate-700">{filteredData.length.toLocaleString()}</h3>
           </div>
         </div>
-        <div className="card-minimal flex items-center gap-6">
-          <div className="p-4 bg-blue-50 rounded-2xl">
-            <TrendingUp className="w-8 h-8 text-blue-600" />
+        <div className="card-minimal flex items-center gap-4 border-rose-100 bg-rose-50/10">
+          <div className="p-3 bg-rose-50 rounded-2xl">
+            <Bell className="w-6 h-6 text-rose-500" />
           </div>
           <div>
-            <p className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">CIDs Diferentes</p>
-            <h3 className="text-3xl font-black text-slate-700">{Object.keys(cidCounts).length}</h3>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Notificáveis</p>
+            <h3 className="text-2xl font-black text-rose-600">{notificaveis.length}</h3>
           </div>
         </div>
-        <div className="card-minimal flex items-center gap-6">
-          <div className="p-4 bg-amber-50 rounded-2xl">
-            <Users className="w-8 h-8 text-amber-600" />
+        <div className="card-minimal flex items-center gap-4">
+          <div className="p-3 bg-amber-50 rounded-2xl">
+            <Clock className="w-6 h-6 text-amber-500" />
           </div>
           <div>
-            <p className="text-[12px] font-bold text-slate-400 uppercase tracking-widest">Capítulos Atordados</p>
-            <h3 className="text-3xl font-black text-slate-700">{Object.keys(chapterCounts).length}</h3>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Pendentes</p>
+            <h3 className="text-2xl font-black text-amber-600">{pendentes.length}</h3>
           </div>
+        </div>
+        <div className="card-minimal flex items-center gap-4">
+          <div className="p-3 bg-blue-50 rounded-2xl">
+            <CheckCircle className="w-6 h-6 text-blue-500" />
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Notificados</p>
+            <h3 className="text-2xl font-black text-blue-600">{notificados.length}</h3>
+          </div>
+        </div>
+      </div>
+
+      <div id="notificacoes-section" className="card-minimal overflow-hidden !p-0 border-rose-200 ring-1 ring-rose-50 shadow-lg shadow-rose-100/20">
+        <div className="p-6 bg-white flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-rose-100">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-rose-500 rounded-xl">
+              <Bell className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-slate-700 uppercase tracking-widest">Gestão de Notificações Compulsórias</h3>
+              <p className="text-[10px] text-slate-400 font-bold uppercase mt-0.5">Detecção automática por CID-10</p>
+            </div>
+          </div>
+          
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex bg-slate-100 p-1 rounded-xl">
+              {(['all', 'pendente', 'notificado', 'ignorado'] as const).map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setNotificacaoFilter(f)}
+                  className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${
+                    notificacaoFilter === f ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  {f === 'all' ? 'Tudo' : f}
+                </button>
+              ))}
+            </div>
+            
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input 
+                type="text" 
+                placeholder="Paciente ou CID..." 
+                className="pl-9 pr-4 py-2 border border-rose-100 rounded-xl text-xs text-slate-600 focus:outline-none focus:ring-2 focus:ring-rose-500/10 transition-all w-48 bg-rose-50/30"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="max-h-[400px] overflow-y-auto">
+          <table className="w-full text-left text-[12px]">
+            <thead className="bg-slate-50 sticky top-0 z-10 border-b border-slate-100">
+              <tr>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Status</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">CID</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Paciente</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Data</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Unidade</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Ação</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {notificationTableData.length > 0 ? notificationTableData.map((item, i) => (
+                <tr key={i} className={`hover:bg-rose-50/20 transition-colors ${item.notificacao_status === 'pendente' ? 'bg-rose-50/5' : ''}`}>
+                  <td className="px-6 py-4">
+                    <span className={`badge-minimal text-[9px] font-black border-none px-2 py-1 ${
+                      item.notificacao_status === 'notificado' ? 'bg-blue-100 text-blue-600' :
+                      item.notificacao_status === 'pendente' ? 'bg-rose-100 text-rose-600 animate-pulse' :
+                      'bg-slate-100 text-slate-500'
+                    }`}>
+                      {item.notificacao_status?.toUpperCase()}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex flex-col">
+                      <span className="font-black text-slate-700">{item.codigo}</span>
+                      <span className="text-[10px] text-slate-400 font-medium truncate max-w-[200px]">{item.descricao}</span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 font-bold text-slate-600 uppercase">{item.paciente}</td>
+                  <td className="px-6 py-4 text-slate-500">
+                    {item.timestamp ? new Date(item.timestamp).toLocaleDateString() : '-'}
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className="text-[10px] font-black text-slate-400 border border-slate-200 px-1.5 py-0.5 rounded">
+                      {item.unidade}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-right">
+                    {item.notificacao_status === 'pendente' && (
+                      <div className="flex justify-end gap-1.5">
+                        <button 
+                          onClick={() => updateNotificacaoStatus(item.id!, 'notificado')}
+                          title="Marcar como Notificado"
+                          className="p-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-600 hover:text-white transition-all shadow-sm"
+                        >
+                          <CheckCircle className="w-3.5 h-3.5" />
+                        </button>
+                        <button 
+                          onClick={() => updateNotificacaoStatus(item.id!, 'ignorado')}
+                          title="Ignorar Notificação"
+                          className="p-2 bg-slate-50 text-slate-400 rounded-lg hover:bg-slate-200 transition-all border border-slate-100"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )) : (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center text-slate-300 font-bold uppercase tracking-widest text-[10px]">
+                    Nenhuma notificação encontrada para os filtros aplicados
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div className="card-minimal h-full">
           <div className="flex items-center gap-3 mb-8 p-2">
-            <Filter className="w-5 h-5 text-ints-green" />
+            <BarChart2 className="w-5 h-5 text-ints-green" />
             <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wide">Distribuição por Capítulo CID-10</h3>
           </div>
           <div className="h-[350px] w-full">
             {sortedChapters.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={sortedChapters} layout="vertical" margin={{ left: 20, right: 30 }}>
-                  <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} stroke="#F1F5F9" />
-                  <XAxis type="number" hide />
-                  <YAxis 
+                <BarChart data={sortedChapters} margin={{ top: 20, right: 30, left: 0, bottom: 60 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                  <XAxis 
                     dataKey="name" 
-                    type="category" 
+                    angle={-45} 
+                    textAnchor="end" 
+                    interval={0}
+                    height={80}
+                    tick={{ fill: '#94A3B8', fontSize: 9, fontWeight: 700 }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis 
                     axisLine={false} 
                     tickLine={false} 
-                    width={180}
                     tick={{ fill: '#94A3B8', fontSize: 10, fontWeight: 600 }}
                   />
-                  <Tooltip cursor={{ fill: 'transparent' }} />
-                  <Bar dataKey="count" fill="#2D8653" radius={[0, 4, 4, 0]}>
+                  <Tooltip 
+                    cursor={{ fill: 'rgba(0,0,0,0.02)' }}
+                    contentStyle={{ 
+                      borderRadius: '12px', 
+                      border: 'none', 
+                      boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)',
+                      padding: '12px'
+                    }}
+                    formatter={(value: number) => [value, 'Quantidade']}
+                    labelStyle={{ fontWeight: 'bold', color: '#1E293B', marginBottom: '4px' }}
+                  />
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>
                     {sortedChapters.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                     ))}

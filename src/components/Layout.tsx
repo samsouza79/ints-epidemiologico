@@ -17,7 +17,8 @@ import {
   ChevronRight,
   ShieldCheck,
   ClipboardList,
-  FileText
+  FileText,
+  Dna
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { INSTITUTIONAL_GREEN } from '../constants';
@@ -50,10 +51,10 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, setActiveTab, user
 
   const menuItems = [
     { id: 'producao', label: 'Produção / Metas', icon: BarChart3 },
-    { id: 'apoio', label: 'Apoio Assistencial', icon: Activity },
     { id: 'exames', label: 'Exames', icon: Stethoscope },
     { id: 'atestados', label: 'Atestados', icon: FileText },
     { id: 'epidemio', label: 'Epidemiológico', icon: LayoutDashboard },
+    { id: 'cruzamento', label: 'Cruzamento Atestado-CID', icon: Dna },
     { id: 'relatorios', label: 'Relatórios', icon: ClipboardList },
     { id: 'upload', label: 'Upload de Arquivos', icon: FileUp },
     { id: 'admin', label: 'Configurações Admin', icon: ShieldCheck },

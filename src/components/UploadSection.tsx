@@ -21,7 +21,8 @@ import {
   Clock
 } from 'lucide-react';
 import { motion } from 'motion/react';
-import { parseExcelFile, processCID } from '../lib/excelProcessor';
+import { parseExcelFile, processCID, normalizeName, isValidCID, extractHospitalSummaryData } from '../lib/excelProcessor';
+import { normalizeCidForComparison, getCompulsoryCids } from '../lib/notificacoesProcessor';
 import { supabase, handleSupabaseError } from '../lib/supabase';
 import { FileType, Profile, UploadDoc } from '../types';
 import { INSTITUTIONAL_GREEN, UNITS } from '../constants';
@@ -276,11 +277,15 @@ const UploadSection: React.FC<UploadSectionProps> = ({ profile }) => {
         Atendimentos: 0,
         CIDs: 0,
         Atestados: 0,
-        Exames: 0
+        Exames: 0,
+        Monitoramento: 0
       };
       let totalRecordsCount = 0;
       let filesSuccess = 0;
       let filesError = 0;
+
+      // Fetch compulsory CIDs once for the entire batch
+      const { codes: compulsoryCodes } = await getCompulsoryCids(true);
 
       for (const file of files) {
         setFileStatuses(prev => ({
@@ -289,7 +294,7 @@ const UploadSection: React.FC<UploadSectionProps> = ({ profile }) => {
         }));
 
         try {
-          const { type, data, identifiedUnit, meta } = await parseExcelFile(file);
+          const { type, data, rawRows, identifiedUnit, meta } = await parseExcelFile(file);
           const finalUnit = identifiedUnit || file.identifiedUnit || manualUnits[file.name];
           
           if (!finalUnit) throw new Error("Unidade não identificada para este arquivo.");
@@ -304,120 +309,239 @@ const UploadSection: React.FC<UploadSectionProps> = ({ profile }) => {
           }
 
           const tableName = type === 'CIDs' ? 'cids' : type.toLowerCase();
-          const rawRows: any[] = [];
+          const processedRows: any[] = [];
 
-          // Dynamic Column Mapper helper
-          const findCol = (rowKeys: string[], ...terms: string[]) => {
-            const normalizedTerms = terms.map(t => t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
-            return rowKeys.find(k => {
-              const nk = k.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-              return normalizedTerms.some(t => nk.includes(t));
-            });
-          };
+          // SPECIAL HANDLING: ATENDIMENTOS (Consolidated Hospital Report)
+          if (type === 'Atendimentos') {
+            const { totalAtendimentos, mes: sumMes, ano: sumAno, unidade: sumUnit } = extractHospitalSummaryData(rawRows, file.name);
+            
+            if (totalAtendimentos && totalAtendimentos > 0) {
+              const mes = sumMes || meta.mes || new Date().getMonth() + 1;
+              const ano = sumAno || meta.ano || new Date().getFullYear();
+              const unidade = sumUnit || finalUnit;
 
-          const cleanup = (val: any) => {
-            if (val === undefined || val === null) return null;
-            const str = String(val).trim();
-            return str === "" || str === "-" || str === "." ? null : str;
-          };
-
-          if (data.length > 0) {
-            console.log(`[Upload] Iniciando processamento de ${file.name} (${type})`);
-            console.log(`[Upload] Exemplo da primeira linha bruta:`, data[0]);
-          }
-
-          data.forEach((row, idx) => {
-            // IGNORE EMPTY ROWS
-            if (!row || Object.values(row).every(v => v === "" || v === null || v === undefined)) return;
-
-            const rowKeys = Object.keys(row);
-            const mes = parseInt(row.Mês || row['Mês'] || meta.mes || new Date().getMonth() + 1);
-            const ano = parseInt(row.Ano || row['Ano'] || meta.ano || new Date().getFullYear());
-
-            let processedRow: any = {
-              unidade: finalUnit,
-              mes,
-              ano,
-              timestamp: new Date().toISOString(),
+              processedRows.push({
+                unidade,
+                mes,
+                ano,
+                quantidade: totalAtendimentos,
+                timestamp: new Date().toISOString(),
+              });
+              console.log(`[Consolidado] Detectado: ${totalAtendimentos} atendimentos para ${unidade} em ${mes}/${ano}`);
+            } else {
+               throw new Error("Não foi possível localizar o 'Total de Atendimentos' na planilha.");
+            }
+          } else {
+            // STANDARD ROW-BY-ROW PROCESSING (CIDs, Exames, Atestados, etc)
+            // Dynamic Column Mapper helper
+            const findCol = (rowKeys: string[], ...terms: string[]) => {
+              const normalizedRowKeys = rowKeys.map(k => ({
+                original: k,
+                normalized: k.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim()
+              }));
+              
+              const normalizedTerms = terms.map(t => t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim());
+              
+              // 1. Try exact matches first for all terms
+              for (const term of normalizedTerms) {
+                const exactMatch = normalizedRowKeys.find(rk => rk.normalized === term);
+                if (exactMatch) return exactMatch.original;
+              }
+              
+              // 2. Try specific start/end matches (more reliable than 'includes')
+              for (const term of normalizedTerms) {
+                const smartMatch = normalizedRowKeys.find(rk => rk.normalized.startsWith(term) || rk.normalized.endsWith(term));
+                if (smartMatch) return smartMatch.original;
+              }
+  
+              // 3. Last resort fallback to includes
+              for (const term of normalizedTerms) {
+                const partialMatch = normalizedRowKeys.find(rk => rk.normalized.includes(term));
+                if (partialMatch) return partialMatch.original;
+              }
+              
+              return undefined;
             };
 
-            try {
-              if (type === 'Atendimentos') {
-                const qtyKey = findCol(rowKeys, 'quantidade', 'total', 'atend', 'qtd');
-                processedRow.quantidade = qtyKey ? (parseInt(row[qtyKey] || 0) || 0) : 1;
-                rawRows.push(processedRow);
-              } 
-              else if (type === 'CIDs') {
-                const cidKey = findCol(rowKeys, 'cid', 'codigo cid', 'diagnostico', 'cod cid');
-                const pacKey = findCol(rowKeys, 'paciente', 'nome', 'pront');
-                
-                const cidVal = cleanup(row[cidKey || '']);
-                const pacVal = cleanup(row[pacKey || '']) || "Não Identificado";
+            const cleanup = (val: any) => {
+              if (val === undefined || val === null) return null;
+              const str = String(val).trim();
+              return str === "" || str === "-" || str === "." ? null : str;
+            };
 
-                const { code, description } = processCID(cidVal);
-                processedRow.codigo = code;
-                processedRow.descricao = description;
-                processedRow.paciente = pacVal;
-                
-                if (processedRow.codigo !== 'N/I' || processedRow.paciente !== 'Não Identificado') {
-                  rawRows.push(processedRow);
-                }
-              } 
-              else if (type === 'Exames') {
-                const qtyKey = findCol(rowKeys, 'qtd', 'quantidade', 'total');
-                const examDescKey = findCol(rowKeys, 'descricao_exame', 'procedimento', 'exame', 'descricao');
-                const examCodeKey = findCol(rowKeys, 'codigo_exame', 'codigo_procedimento', 'cod_exame');
-                
-                let qty = 1;
-                if (qtyKey) {
-                  const val = parseInt(row[qtyKey] || 0);
-                  qty = isNaN(val) || val === 0 ? 1 : val;
-                }
-                
-                const desc = cleanup(row[examDescKey || '']) || "Não Identificado";
-                const code = cleanup(row[examCodeKey || '']) || "N/I";
-                
-                processedRow.descricao_exame = desc;
-                processedRow.codigo_exame = code;
-                processedRow.nome = desc; // Sync legacy 'nome' with description
-                processedRow.quantidade = qty;
-                rawRows.push(processedRow);
-              } 
-              else if (type === 'Atestados') {
-                const cidKey = findCol(rowKeys, 'cid', 'diagnostico', 'causa', 'classificacao', 'cid10', 'cod cid', 'cod_cid', 'descricao cid');
-                
-                const cidVal = cleanup(row[cidKey || '']);
-                const { code, description } = processCID(cidVal);
-                
-                processedRow.cid_codigo = code;
-                processedRow.cid_descricao = description;
-                processedRow.quantidade = 1; // Default to 1 for each line
-
-                // Fallback robusto se CID não foi mapeado pela coluna
-                if (code === 'N/I' && !cidKey) {
-                   // Tenta procurar qualquer valor que pareça um CID na linha
-                   for (const key of rowKeys) {
-                     const val = String(row[key]);
-                     if (/^[A-Z][0-9]{2,3}/i.test(val)) {
-                       const fb = processCID(val);
-                       if (fb.code !== 'N/I') {
-                         processedRow.cid_codigo = fb.code;
-                         processedRow.cid_descricao = fb.description;
-                         break;
-                       }
-                     }
-                   }
-                }
-
-                rawRows.push(processedRow);
-              }
-            } catch (rowErr) {
-              console.warn(`Erro na linha ${row.__rowNum}:`, rowErr);
+            if (data.length > 0) {
+              console.log(`[Upload] Iniciando processamento de ${file.name} (${type})`);
+              console.log(`[Upload] Exemplo da primeira linha bruta:`, data[0]);
             }
-          });
 
-          if (rawRows.length > 0) {
-            console.log(`[Upload] Exemplo de linha processada:`, rawRows[0]);
+            let invalidCidCount = 0;
+
+            data.forEach((row, idx) => {
+              // IGNORE EMPTY ROWS
+              if (!row || Object.values(row).every(v => v === "" || v === null || v === undefined)) return;
+
+              const rowKeys = Object.keys(row);
+              const mes = parseInt(row.Mês || row['Mês'] || meta.mes || new Date().getMonth() + 1);
+              const ano = parseInt(row.Ano || row['Ano'] || meta.ano || new Date().getFullYear());
+
+              let processedRow: any = {
+                unidade: finalUnit,
+                mes,
+                ano,
+                timestamp: new Date().toISOString(),
+              };
+
+              try {
+                if (type === 'CIDs') {
+                  const cidKey = findCol(rowKeys, 'cid', 'codigo cid', 'diagnostico', 'cod cid');
+                  const pacKey = findCol(rowKeys, 'paciente', 'nome', 'pront');
+                  const dateKey = findCol(rowKeys, 'data de atendimento', 'data', 'realizacao', 'entrada');
+                  
+                  const cidVal = cleanup(row[cidKey || '']);
+                  const pacVal = cleanup(row[pacKey || '']) || "Não Identificado";
+
+                  const { code, description } = processCID(cidVal);
+                  
+                  // Validação de CID
+                  if (code !== 'N/I' && !isValidCID(code)) {
+                    invalidCidCount++;
+                  }
+
+                  processedRow.codigo = code;
+                  processedRow.descricao = description;
+                  processedRow.paciente = normalizeName(pacVal);
+                  
+                  // --- Automatic Notification Detection ---
+                  const normalizedCid = normalizeCidForComparison(code);
+                  if (compulsoryCodes.has(normalizedCid)) {
+                    processedRow.is_notificavel = true;
+                    processedRow.notificacao_status = 'pendente';
+                    console.log(`[Notification] CID compulsório detectado: ${code} (${description})`);
+                  } else {
+                    processedRow.is_notificavel = false;
+                    processedRow.notificacao_status = 'ignorado';
+                  }
+
+                  if (dateKey && row[dateKey]) {
+                    processedRow.data_atendimento = new Date(row[dateKey]).toISOString();
+                  }
+                  
+                  if (processedRow.codigo !== 'N/I' || processedRow.paciente !== 'NAO IDENTIFICADO') {
+                    processedRows.push(processedRow);
+                  }
+                } 
+                else if (type === 'Monitoramento') {
+                  const pacKey = findCol(rowKeys, 'paciente', 'nome');
+                  const entradaKey = findCol(rowKeys, 'entrada', 'data inicial');
+                  const altaKey = findCol(rowKeys, 'alta medica', 'alta');
+                  const riscoKey = findCol(rowKeys, 'risco', 'protocolo');
+
+                  processedRow.paciente = normalizeName(cleanup(row[pacKey || '']) || "");
+                  if (entradaKey && row[entradaKey]) {
+                    processedRow.data_entrada = new Date(row[entradaKey]).toISOString();
+                  }
+                  if (altaKey && row[altaKey]) {
+                    processedRow.data_alta = new Date(row[altaKey]).toISOString();
+                  }
+                  processedRow.protocolo_risco = cleanup(row[riscoKey || '']);
+                  
+                  if (processedRow.paciente) {
+                    processedRows.push(processedRow);
+                  }
+                }
+                else if (type === 'Exames') {
+                  const qtyKey = findCol(rowKeys, 'qtd', 'quantidade', 'total');
+                  const examDescKey = findCol(rowKeys, 'procedimento', 'descricao_exame', 'exame', 'descricao', 'nome_exame');
+                  
+                  let qty = 1;
+                  if (qtyKey) {
+                    const val = parseInt(row[qtyKey] || 0);
+                    qty = isNaN(val) || val === 0 ? 1 : val;
+                  }
+                  
+                  const desc = cleanup(row[examDescKey || '']) || "Não Identificado";
+                  
+                  // Usamos 'nome' como o campo principal para o Ranking e Dashboard
+                  processedRow.nome = desc;
+                  processedRow.quantidade = qty;
+                  processedRows.push(processedRow);
+                } 
+                else if (type === 'Atestados') {
+                  const cidKey = findCol(rowKeys, 'cid', 'diagnostico', 'causa', 'classificacao', 'cid10', 'cod cid', 'cod_cid', 'descricao cid');
+                  const pacKey = findCol(rowKeys, 'paciente', 'nome', 'pront');
+                  const dateKey = findCol(rowKeys, 'data cadastro', 'data atestado', 'data', 'criacao');
+                  
+                  const cidVal = cleanup(row[cidKey || '']);
+                  const pacVal = cleanup(row[pacKey || '']) || "Não Identificado";
+                  let { code, description } = processCID(cidVal);
+                  
+                  // Validação de CID inicial
+                  if (code !== 'N/I' && !isValidCID(code)) {
+                    invalidCidCount++;
+                  }
+
+                  processedRow.cid_codigo = code;
+                  processedRow.cid_descricao = description;
+                  processedRow.quantidade = 1;
+                  processedRow.paciente = normalizeName(pacVal);
+
+                  // --- Automatic Notification Detection ---
+                  const normalizedCid = normalizeCidForComparison(code);
+                  if (compulsoryCodes.has(normalizedCid)) {
+                    processedRow.is_notificavel = true;
+                    processedRow.notificacao_status = 'pendente';
+                    console.log(`[Notification] CID compulsório detectado em atestado: ${code}`);
+                  } else {
+                    processedRow.is_notificavel = false;
+                    processedRow.notificacao_status = 'ignorado';
+                  }
+
+                  if (dateKey && row[dateKey]) {
+                    processedRow.data_atestado = new Date(row[dateKey]).toISOString();
+                  }
+
+                  // Se não achou código CID na coluna designada, procura na linha inteira
+                  if (code === 'N/I') {
+                    for (const key of rowKeys) {
+                      const cellVal = String(row[key] || '');
+                      if (cellVal.length >= 3 && /^[A-Z][0-9]/i.test(cellVal)) {
+                        const fb = processCID(cellVal);
+                        if (fb.code !== 'N/I') {
+                          if (isValidCID(fb.code)) {
+                            processedRow.cid_codigo = fb.code;
+                            processedRow.cid_descricao = fb.description;
+                            break;
+                          } else {
+                            invalidCidCount++;
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  if (processedRow.paciente !== 'NAO IDENTIFICADO' || processedRow.cid_codigo !== 'N/I') {
+                    processedRows.push(processedRow);
+                  }
+                }
+              } catch (rowErr) {
+                console.warn(`Erro na linha ${row.__rowNum}:`, rowErr);
+              }
+            });
+
+            if (invalidCidCount > 0) {
+              console.warn(`[Upload] ${invalidCidCount} códigos CID com formato inválido detectados em ${file.name}`);
+              setFileStatuses(prev => ({
+                ...prev,
+                [file.name]: { 
+                  ...prev[file.name], 
+                  warning: `${invalidCidCount} códigos CID detectados com formato fora do padrão (ex: Letra + Números). Verifique o relatório.`
+                }
+              }));
+            }
+          }
+
+          if (processedRows.length > 0) {
+            console.log(`[Upload] Exemplo de linha processada:`, processedRows[0]);
           }
 
           // Group by unit/month/year/extra to ensure only ONE row per key is sent to Supabase
@@ -425,20 +549,17 @@ const UploadSection: React.FC<UploadSectionProps> = ({ profile }) => {
           let finalRowsToInsert: any[] = [];
           
           if (type === 'CIDs') {
-            // Even for CIDs, we must aggregate if the file has duplicate patient/CID entries in the same period
-            // to avoid "ON CONFLICT DO UPDATE command cannot affect row a second time"
-            rawRows.forEach(row => {
+            processedRows.forEach(row => {
               const key = `${row.unidade}|${row.mes}|${row.ano}|${row.paciente}|${row.codigo}`;
               if (!grouped[key]) {
                 grouped[key] = { ...row };
               }
-              // For CIDs we don't usually sum any 'quantidade', we just want to ensure uniqueness in the batch
             });
             finalRowsToInsert = Object.values(grouped);
             resultsSummary.CIDs += finalRowsToInsert.length;
           } else if (type === 'Exames') {
-            rawRows.forEach(row => {
-              const key = `${row.unidade}|${row.mes}|${row.ano}|${row.descricao_exame}`;
+            processedRows.forEach(row => {
+              const key = `${row.unidade}|${row.mes}|${row.ano}|${row.nome}`;
               if (!grouped[key]) {
                 grouped[key] = { ...row };
               } else {
@@ -448,18 +569,27 @@ const UploadSection: React.FC<UploadSectionProps> = ({ profile }) => {
             finalRowsToInsert = Object.values(grouped);
             resultsSummary.Exames += finalRowsToInsert.reduce((sum, r) => sum + r.quantidade, 0);
           } else if (type === 'Atestados') {
-            rawRows.forEach(row => {
-              const key = `${row.unidade}|${row.mes}|${row.ano}|${row.cid_codigo}`;
+            // Agora atestados podem ser individuais, mas para evitar duplicidade no mesmo upload/dia/paciente:
+            processedRows.forEach(row => {
+              const key = `${row.unidade}|${row.mes}|${row.ano}|${row.paciente}|${row.data_atestado || row.timestamp}|${row.cid_codigo}`;
               if (!grouped[key]) {
                 grouped[key] = { ...row };
-              } else {
-                grouped[key].quantidade += row.quantidade;
               }
             });
             finalRowsToInsert = Object.values(grouped);
-            resultsSummary.Atestados += finalRowsToInsert.reduce((sum, r) => sum + r.quantidade, 0);
+            resultsSummary.Atestados += finalRowsToInsert.length;
+          } else if (type === 'Monitoramento') {
+            processedRows.forEach(row => {
+              const key = `${row.unidade}|${row.mes}|${row.ano}|${row.paciente}|${row.data_entrada}`;
+              if (!grouped[key]) {
+                grouped[key] = { ...row };
+              }
+            });
+            finalRowsToInsert = Object.values(grouped);
+            resultsSummary.Monitoramento += finalRowsToInsert.length;
           } else {
-            rawRows.forEach(row => {
+            // Atendimentos (Already consolidated or standard)
+            processedRows.forEach(row => {
               const key = `${row.unidade}|${row.mes}|${row.ano}`;
               if (!grouped[key]) {
                 grouped[key] = { ...row };
@@ -474,29 +604,57 @@ const UploadSection: React.FC<UploadSectionProps> = ({ profile }) => {
             if (type === 'Atendimentos') resultsSummary.Atendimentos += totalQty;
           }
 
-          // Insert into Supabase with duplicity prevention
+          // Inserir os dados processados na tabela correspondente
           if (finalRowsToInsert.length > 0) {
-            let conflictCols = 'unidade,mes,ano';
-            if (type === 'CIDs') {
-              conflictCols = 'unidade,mes,ano,paciente,codigo';
-            } else if (type === 'Exames') {
-              conflictCols = 'unidade,mes,ano,descricao_exame';
-            } else if (type === 'Atestados') {
-              conflictCols = 'unidade,mes,ano,cid_codigo';
-            }
+            console.log(`[Upload] Iniciando batch upload para ${tableName === 'monitoramento' ? 'monitoramento' : tableName}.`, {
+              tipo: type,
+              total_registros: finalRowsToInsert.length,
+              role: profile?.role,
+              status: profile?.status
+            });
 
-            const { error } = await supabase
-              .from(tableName)
-              .upsert(finalRowsToInsert, { 
-                onConflict: conflictCols,
-                ignoreDuplicates: false 
-              });
+            const BATCH_SIZE = 1000;
+            let recordsInsertedCount = 0;
+
+            for (let i = 0; i < finalRowsToInsert.length; i += BATCH_SIZE) {
+              const batch = finalRowsToInsert.slice(i, i + BATCH_SIZE);
               
-            if (error) throw error;
+              let conflictCols = 'unidade,mes,ano';
+              if (type === 'CIDs') {
+                conflictCols = 'unidade,mes,ano,paciente,codigo';
+              } else if (type === 'Exames') {
+                conflictCols = 'unidade,mes,ano,nome';
+              } else if (type === 'Atestados') {
+                conflictCols = 'unidade,paciente,data_atestado,cid_codigo';
+              } else if (type === 'Monitoramento') {
+                conflictCols = 'unidade,paciente,data_entrada';
+              }
+
+              console.log(`[Upload] Enviando lote ${i / BATCH_SIZE + 1} (${batch.length} registros)...`);
+
+              const { error } = await supabase
+                .from(tableName === 'monitoramento' ? 'monitoramento' : tableName)
+                .upsert(batch, { 
+                  onConflict: conflictCols 
+                });
+                
+              if (error) {
+                console.error(`[Upload Error] Erro detalhado de banco (${type}):`, {
+                  code: error.code,
+                  message: error.message,
+                  details: error.details,
+                  hint: error.hint,
+                  table: tableName === 'monitoramento' ? 'monitoramento' : tableName
+                });
+                throw error;
+              }
+              recordsInsertedCount += batch.length;
+            }
             
             // --- RECORD UPLOAD HISTORY ---
             const { mes: fileMes, ano: fileAno } = meta;
-            const recordsInserted = type === 'CIDs' ? finalRowsToInsert.length : finalRowsToInsert.reduce((s, r) => s + (r.quantidade || 0), 0);
+            const recordsInserted = recordsInsertedCount;
+
             
             await supabase.from('uploads').insert({
               filename: file.name,

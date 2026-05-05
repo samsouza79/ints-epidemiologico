@@ -22,6 +22,8 @@ export interface CidDoc {
   paciente?: string;
   quantidade?: number; // Usually 1 per record now
   timestamp: string;
+  notificacao_status?: 'pendente' | 'notificado' | 'ignorado';
+  is_notificavel?: boolean;
 }
 
 export interface AtestadoDoc {
@@ -29,9 +31,34 @@ export interface AtestadoDoc {
   unidade: string;
   mes: number;
   ano: number;
+  paciente?: string;
+  data_atestado?: string;
   quantidade: number;
   cid_codigo?: string;
   cid_descricao?: string;
+  timestamp: string;
+  notificacao_status?: 'pendente' | 'notificado' | 'ignorado';
+  is_notificavel?: boolean;
+}
+
+export interface NotificacaoCid {
+  id?: string;
+  cid: string;
+  descricao: string;
+  categoria: string;
+  obrigatorio: boolean;
+  created_at?: string;
+}
+
+export interface MonitoramentoDoc {
+  id?: string;
+  unidade: string;
+  mes: number;
+  ano: number;
+  paciente: string;
+  data_entrada: string;
+  data_alta?: string;
+  protocolo_risco?: string;
   timestamp: string;
 }
 
@@ -58,7 +85,7 @@ export interface UploadDoc {
   created_at?: string;
 }
 
-export type FileType = 'Atendimentos' | 'CIDs' | 'Atestados' | 'Exames' | 'Unknown';
+export type FileType = 'Atendimentos' | 'CIDs' | 'Atestados' | 'Exames' | 'Monitoramento' | 'Unknown';
 
 export type UserRole = 'admin' | 'user';
 export type ProfileStatus = 'approved' | 'pending' | 'blocked';

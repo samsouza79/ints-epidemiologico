@@ -7,6 +7,7 @@ import React, { useEffect, useState } from 'react';
 import { 
   ComposedChart,
   Bar, 
+  Line,
   XAxis, 
   YAxis, 
   CartesianGrid, 
@@ -15,7 +16,8 @@ import {
   Cell,
   PieChart, 
   Pie,
-  Label
+  Label,
+  Legend
 } from 'recharts';
 import { 
   Target, 
@@ -128,7 +130,8 @@ const DashboardProducao: React.FC<DashboardProducaoProps> = ({ filters }) => {
           const refYear = filters.ano === 'all' ? new Date().getFullYear() : Number(filters.ano);
           
           const monthsToFetch = [];
-          for (let i = 1; i <= 3; i++) {
+          // Include current month (i=0) and last 3 months (i=1,2,3)
+          for (let i = 0; i <= 3; i++) {
             let m = refMonth - i;
             let y = refYear;
             while (m <= 0) {
@@ -149,7 +152,7 @@ const DashboardProducao: React.FC<DashboardProducaoProps> = ({ filters }) => {
               const { data, error } = await supabase.from(table)
                 .select('quantidade')
                 .range(hFrom, hFrom + 999)
-                .order('id', { ascending: true }) // Added order
+                .order('id', { ascending: true })
                 .eq('unidade', filters.unidade)
                 .eq('mes', m)
                 .eq('ano', y);
@@ -272,48 +275,91 @@ const DashboardProducao: React.FC<DashboardProducaoProps> = ({ filters }) => {
     <div className="space-y-8">
       {/* Historical Trend Section (Only when unit selected) */}
       {filters.unidade !== 'all' && historicalStats.length > 0 && (
-        <div className="animate-in fade-in slide-in-from-left-4 duration-700">
-          <div className="flex items-center gap-3 mb-6">
+        <div className="animate-in fade-in slide-in-from-left-4 duration-700 space-y-6">
+          <div className="flex items-center gap-3 mb-2">
             <TrendingUp className="w-5 h-5 text-ints-green" />
-            <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Tendência Últimos 3 Meses • {filters.unidade}</h3>
+            <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-slate-400">Evolução Mensal • {filters.unidade}</h3>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {historicalStats.map((stat, idx) => {
-              const showStatMeta = filters.tipo === 'all' || filters.tipo === 'cids';
-              const perc = stat.meta > 0 ? Math.round((stat.value / stat.meta) * 100) : 0;
-              const isLast = idx === historicalStats.length - 1;
-              
-              return (
-                <div key={stat.label} className={`card-minimal flex flex-col justify-between ${isLast ? 'border-ints-green/30 ring-1 ring-ints-green/5 bg-green-50/20' : ''}`}>
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{stat.label}</span>
-                    {showStatMeta && (
-                      <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${perc >= 100 ? 'bg-green-100 text-green-700' : 'bg-rose-100 text-rose-700'}`}>
-                        {perc}%
-                      </span>
-                    )}
-                  </div>
-                  <div>
-                    <p className="text-xl font-black text-slate-700 leading-none mb-1">
-                      {stat.value.toLocaleString()}
-                    </p>
-                    {showStatMeta ? (
-                      <p className="text-[10px] font-bold text-slate-400 uppercase">da meta de {stat.meta.toLocaleString()}</p>
-                    ) : (
-                      <p className="text-[10px] font-bold text-slate-400 uppercase">Total de {filters.tipo}</p>
-                    )}
-                  </div>
-                  {showStatMeta && (
-                    <div className="mt-4 h-1 bg-slate-100 rounded-full overflow-hidden">
-                      <div 
-                        className="h-full bg-ints-green transition-all duration-1000" 
-                        style={{ width: `${Math.min(perc, 100)}%` }}
-                      />
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Historical Cards (First 3 months) */}
+            <div className="lg:col-span-1 grid grid-cols-1 gap-4">
+              {historicalStats.slice(0, -1).map((stat) => {
+                const showStatMeta = filters.tipo === 'all' || filters.tipo === 'cids';
+                const perc = stat.meta > 0 ? Math.round((stat.value / stat.meta) * 100) : 0;
+                
+                return (
+                  <div key={stat.label} className="card-minimal flex flex-col justify-between py-4">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{stat.label}</span>
+                      {showStatMeta && (
+                        <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${perc >= 100 ? 'bg-green-100 text-green-700' : 'bg-rose-100 text-rose-700'}`}>
+                          {perc}%
+                        </span>
+                      )}
                     </div>
-                  )}
-                </div>
-              );
-            })}
+                    <div>
+                      <p className="text-lg font-black text-slate-700 leading-none mb-1">
+                        {stat.value.toLocaleString()}
+                      </p>
+                      <p className="text-[9px] font-bold text-slate-400 uppercase">
+                        {showStatMeta ? `da meta de ${stat.meta.toLocaleString()}` : `Total de ${filters.tipo}`}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Evolution Chart */}
+            <div className="lg:col-span-2 card-minimal">
+              <div className="h-[280px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={historicalStats} margin={{ top: 20, right: 30, left: 10, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis 
+                      dataKey="label" 
+                      axisLine={false} 
+                      tickLine={false} 
+                      tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }} 
+                    />
+                    <YAxis 
+                      axisLine={false} 
+                      tickLine={false} 
+                      tick={{ fill: '#94a3b8', fontSize: 10, fontWeight: 700 }}
+                    />
+                    <Tooltip 
+                      contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                      itemStyle={{ fontSize: '12px', fontWeight: 'bold' }}
+                    />
+                    <Legend 
+                      verticalAlign="top" 
+                      align="right" 
+                      iconType="circle"
+                      wrapperStyle={{ fontSize: '10px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.1em', paddingBottom: '20px' }}
+                    />
+                    <Bar 
+                      name="Produção"
+                      dataKey="value" 
+                      fill="#3b82f6" 
+                      radius={[4, 4, 0, 0]} 
+                      barSize={30} 
+                    />
+                    {(filters.tipo === 'all' || filters.tipo === 'cids') && (
+                      <Line 
+                        name="Meta"
+                        type="monotone" 
+                        dataKey="meta" 
+                        stroke="#ef4444" 
+                        strokeWidth={3} 
+                        dot={{ r: 4, fill: '#ef4444', strokeWidth: 2, stroke: '#fff' }}
+                        activeDot={{ r: 6 }}
+                      />
+                    )}
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
           </div>
         </div>
       )}

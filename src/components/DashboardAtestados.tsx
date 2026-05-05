@@ -41,6 +41,7 @@ interface DashboardAtestadosProps {
 
 const DashboardAtestados: React.FC<DashboardAtestadosProps> = ({ filters }) => {
   const [data, setData] = useState<AtestadoDoc[]>([]);
+  const [attendances, setAttendances] = useState<any[]>([]); // New: store attendances for CID association
   const [historicalStats, setHistoricalStats] = useState<HistoricalMonth[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -99,6 +100,11 @@ const DashboardAtestados: React.FC<DashboardAtestadosProps> = ({ filters }) => {
 
       const records = await fetchAll('atestados', filters);
       setData(records as AtestadoDoc[] || []);
+
+      // FETCH ATTENDANCES (CIDs) to associate with atestados
+      // We only need attendances for the same period/unit to match
+      const attendanceRecords = await fetchAll('cids', filters);
+      setAttendances(attendanceRecords || []);
 
       // --- FETCH HISTORICAL DATA FOR SELECTED UNIT ---
       if (filters.unidade !== 'all') {
@@ -183,16 +189,43 @@ const DashboardAtestados: React.FC<DashboardAtestadosProps> = ({ filters }) => {
   const cidRanking = React.useMemo(() => {
     const rankingMap: Record<string, { total: number; desc: string }> = {};
     
+    // Group attendances by patient and date for faster lookup
+    // key: paciente|unidade|YYYY-MM-DD
+    const attendanceMap: Record<string, { code: string; desc: string }[]> = {};
+    attendances.forEach(att => {
+      if (!att.paciente || att.codigo === 'N/I') return;
+      const datePart = att.data_atendimento ? att.data_atendimento.split('T')[0] : '';
+      if (!datePart) return;
+      
+      const key = `${att.paciente.toUpperCase()}|${att.unidade.toUpperCase()}|${datePart}`;
+      if (!attendanceMap[key]) attendanceMap[key] = [];
+      attendanceMap[key].push({ code: att.codigo, desc: att.descricao });
+    });
+
     filteredData.forEach(d => {
       let code = (d.cid_codigo || 'N/I').trim().toUpperCase();
       let desc = d.cid_descricao || 'Não Identificado';
 
-      // Inteligência adicional: Se o código for N/I mas a descrição tiver um CID, tenta extrair
+      // Inteligência adicional 1: Extrair do texto se for N/I
       if (code === 'N/I' && desc !== 'Não Identificado') {
         const reParsed = processCID(desc);
         if (reParsed.code !== 'N/I') {
           code = reParsed.code;
           desc = reParsed.description || desc;
+        }
+      }
+
+      // Inteligência adicional 2: Associação por Paciente + Unidade + Data (Proximidade Temporal)
+      if (code === 'N/I' && d.paciente && d.data_atestado) {
+        const atestadoDate = d.data_atestado.split('T')[0];
+        const matchKey = `${d.paciente.toUpperCase()}|${d.unidade.toUpperCase()}|${atestadoDate}`;
+        
+        const matchedAtt = attendanceMap[matchKey];
+        if (matchedAtt && matchedAtt.length > 0) {
+          // Se houver múltiplos no mesmo dia, pega o primeiro válido
+          code = matchedAtt[0].code;
+          desc = matchedAtt[0].desc;
+          console.log(`[DashboardAtestados] CID Associado via Atendimento: ${d.paciente} -> ${code} em ${d.unidade}`);
         }
       }
       
